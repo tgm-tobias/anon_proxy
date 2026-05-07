@@ -39,6 +39,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.96.0",
     "httpx>=0.28.1",
+    "openai>=2.35.1",
     "prompt-toolkit>=3.0.52",
     "starlette>=1.0.0",
     "torch>=2.11.0",

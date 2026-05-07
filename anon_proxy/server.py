@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urljoin
 
@@ -37,6 +39,7 @@ _DIM = "\033[2m"
 _CYAN = "\033[96m"
 _YELLOW = "\033[93m"
 _GREEN = "\033[92m"
+_MAGENTA = "\033[95m"
 _RESET = "\033[0m"
 
 # Adapter registry
@@ -162,6 +165,33 @@ def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
     sys.stderr.flush()
 
 
+def _log_metrics(provider: str, e2e: float, upstream: float) -> None:
+    """Print per-turn latency breakdown to stderr."""
+    proxy = max(e2e - upstream, 0.0)
+    pct = (proxy / e2e * 100.0) if e2e > 0 else 0.0
+    print(
+        f"{_MAGENTA}[metrics {provider}]{_RESET} "
+        f"e2e={e2e * 1000:.1f}ms  upstream={upstream * 1000:.1f}ms  "
+        f"proxy={proxy * 1000:.1f}ms ({pct:.1f}%)",
+        file=sys.stderr,
+    )
+    sys.stderr.flush()
+
+
+async def _timed_aiter(source: AsyncIterator[bytes], acc: list[float]) -> AsyncIterator[bytes]:
+    """Yield from an async iterator, accumulating __anext__ wall-clock into acc[0]."""
+    aiter = source.__aiter__()
+    while True:
+        t = time.perf_counter()
+        try:
+            chunk = await aiter.__anext__()
+        except StopAsyncIteration:
+            acc[0] += time.perf_counter() - t
+            return
+        acc[0] += time.perf_counter() - t
+        yield chunk
+
+
 _SKIP_REQUEST_HEADERS = {
     "host",
     "content-length",
@@ -181,6 +211,7 @@ def build_app(
     masker: Masker | None = None,
     extra_upstreams: dict[str, UpstreamConfig] | None = None,
     debug: bool = False,
+    metrics: bool = False,
 ) -> Starlette:
     """Build the Starlette application.
 
@@ -188,6 +219,7 @@ def build_app(
         masker: PII masker instance (created if None)
         extra_upstreams: Additional upstream providers configured via CLI
         debug: Enable debug logging
+        metrics: Enable per-turn latency logging
     """
     masker = masker or Masker()
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
@@ -198,6 +230,7 @@ def build_app(
             app.state.client = client
             app.state.masker = masker
             app.state.debug = debug
+            app.state.metrics = metrics
             app.state.upstreams = all_upstreams
             yield
 
@@ -259,6 +292,9 @@ async def _handle_proxy(
     client: httpx.AsyncClient = request.app.state.client
     masker: Masker = request.app.state.masker
     debug: bool = request.app.state.debug
+    metrics: bool = request.app.state.metrics
+    t_start = time.perf_counter()
+    upstream_acc: list[float] = [0.0]
 
     # Extract API path from request (remove provider prefix)
     path_parts = request.url.path.strip("/").split("/", 1)
@@ -311,7 +347,9 @@ async def _handle_proxy(
             headers=upstream_headers,
             params=params,
         )
+        t_send = time.perf_counter()
         upstream_resp = await client.send(req, stream=True)
+        upstream_acc[0] += time.perf_counter() - t_send
 
         if upstream_resp.status_code >= 400:
             err_body = await upstream_resp.aread()
@@ -332,7 +370,7 @@ async def _handle_proxy(
                     substitutions[upstream] = substitutions.get(upstream, client)
             try:
                 async for out in adapter.transform_stream(
-                    upstream_resp.aiter_bytes(),
+                    _timed_aiter(upstream_resp.aiter_bytes(), upstream_acc),
                     masker,
                     on_substitution=track_substitution if debug else None,
                 ):
@@ -340,6 +378,8 @@ async def _handle_proxy(
             finally:
                 if debug:
                     _log_stream_substitutions(substitutions)
+                if metrics:
+                    _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
                 await upstream_resp.aclose()
 
         return StreamingResponse(
@@ -350,6 +390,7 @@ async def _handle_proxy(
         )
 
     # Non-streaming response
+    t_req = time.perf_counter()
     upstream_resp = await client.request(
         request.method,
         upstream_url,
@@ -357,6 +398,7 @@ async def _handle_proxy(
         headers=upstream_headers,
         params=params,
     )
+    upstream_acc[0] += time.perf_counter() - t_req
     content_type = upstream_resp.headers.get("content-type", "")
     if content_type.startswith("application/json"):
         try:
@@ -367,6 +409,8 @@ async def _handle_proxy(
             unmasked = adapter.unmask_response(resp_json, masker)
             if debug:
                 _log_response(resp_json, unmasked)
+            if metrics:
+                _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
             return Response(
                 content=json.dumps(unmasked),
                 status_code=upstream_resp.status_code,
@@ -374,6 +418,8 @@ async def _handle_proxy(
                 media_type="application/json",
             )
 
+    if metrics:
+        _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
     return Response(
         content=upstream_resp.content,
         status_code=upstream_resp.status_code,
@@ -485,6 +531,12 @@ def main() -> None:
         help="Log each request's masked body, response, and any new store entries to stderr.",
     )
     parser.add_argument(
+        "--metrics",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_METRICS", "").lower() in ("1", "true", "yes"),
+        help="Log per-turn latency breakdown (e2e, upstream, proxy) to stderr.",
+    )
+    parser.add_argument(
         "--patterns",
         default=os.environ.get("ANON_PROXY_PATTERNS"),
         help="Path to a JSON file of additional regex patterns (label -> regex).",
@@ -565,7 +617,7 @@ def main() -> None:
         else None
     )
 
-    app = build_app(masker=masker, extra_upstreams=extra_upstreams, debug=args.debug)
+    app = build_app(masker=masker, extra_upstreams=extra_upstreams, debug=args.debug, metrics=args.metrics)
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
     backend_display = f"{args.backend}" if args.backend != "auto" else "auto-detect"
@@ -573,6 +625,7 @@ def main() -> None:
         f"anon-proxy listening on http://{args.host}:{args.port}\n"
         f"  providers: {', '.join(all_providers)}\n"
         f"  debug: {args.debug}\n"
+        f"  metrics: {args.metrics}\n"
         f"  patterns: {args.patterns or '(none)'}\n"
         f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
         f"  backend: {backend_display}\n"
