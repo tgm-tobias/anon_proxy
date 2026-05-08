@@ -28,11 +28,17 @@ def mask_request(body: dict, masker: Masker) -> dict:
     Only touches `messages[*].content` — user/assistant text, tool_use.input,
     and tool_result.content. The system prompt is left intact because it
     contains static tool definitions and instructions, not user data.
+
+    Each message is routed through `masker.mask_obj` so identical messages
+    across turns (the dominant shape of conversation history) hit a hash cache
+    and skip the recursive walk + detection entirely.
     """
     result = dict(body)
     messages = body.get("messages")
     if isinstance(messages, list):
-        result["messages"] = [_mask_message(m, masker) for m in messages]
+        result["messages"] = [
+            masker.mask_obj(m, lambda mm: _mask_message(mm, masker)) for m in messages
+        ]
     return result
 
 

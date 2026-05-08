@@ -14,12 +14,14 @@ Client auth headers are forwarded verbatim and never stored.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import httpx
@@ -30,7 +32,8 @@ from starlette.routing import Mount, Route
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
-from anon_proxy.masker import Masker
+from anon_proxy.capture import Capturer
+from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
 from anon_proxy.regex_detector import RegexDetector, load_patterns
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
@@ -178,8 +181,15 @@ def _log_metrics(provider: str, e2e: float, upstream: float) -> None:
     sys.stderr.flush()
 
 
-async def _timed_aiter(source: AsyncIterator[bytes], acc: list[float]) -> AsyncIterator[bytes]:
-    """Yield from an async iterator, accumulating __anext__ wall-clock into acc[0]."""
+async def _timed_aiter(
+    source: AsyncIterator[bytes],
+    acc: list[float],
+    byte_acc: list[bytes] | None = None,
+) -> AsyncIterator[bytes]:
+    """Yield from an async iterator, accumulating __anext__ wall-clock into acc[0].
+
+    If byte_acc is provided, each yielded chunk is also appended to it.
+    """
     aiter = source.__aiter__()
     while True:
         t = time.perf_counter()
@@ -189,6 +199,8 @@ async def _timed_aiter(source: AsyncIterator[bytes], acc: list[float]) -> AsyncI
             acc[0] += time.perf_counter() - t
             return
         acc[0] += time.perf_counter() - t
+        if byte_acc is not None:
+            byte_acc.append(chunk)
         yield chunk
 
 
@@ -212,6 +224,7 @@ def build_app(
     extra_upstreams: dict[str, UpstreamConfig] | None = None,
     debug: bool = False,
     metrics: bool = False,
+    capture: Capturer | None = None,
 ) -> Starlette:
     """Build the Starlette application.
 
@@ -220,6 +233,7 @@ def build_app(
         extra_upstreams: Additional upstream providers configured via CLI
         debug: Enable debug logging
         metrics: Enable per-turn latency logging
+        capture: Optional Capturer that records each turn's request/response and timing
     """
     masker = masker or Masker()
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
@@ -231,8 +245,13 @@ def build_app(
             app.state.masker = masker
             app.state.debug = debug
             app.state.metrics = metrics
+            app.state.capture = capture
             app.state.upstreams = all_upstreams
-            yield
+            try:
+                yield
+            finally:
+                if capture is not None:
+                    capture.close()
 
     async def dispatch(request: Request) -> Response:
         """Dispatch request based on provider prefix."""
@@ -293,6 +312,7 @@ async def _handle_proxy(
     masker: Masker = request.app.state.masker
     debug: bool = request.app.state.debug
     metrics: bool = request.app.state.metrics
+    capture: Capturer | None = request.app.state.capture
     t_start = time.perf_counter()
     upstream_acc: list[float] = [0.0]
 
@@ -328,7 +348,16 @@ async def _handle_proxy(
 
     # Mask the request
     store_before = len(masker.store)
-    masked = adapter.mask_request(body, masker)
+    mask_request_ms: float | None = None
+    mask_calls: list = []
+    if capture is not None:
+        with telemetry_scope() as calls:
+            t_mask = time.perf_counter()
+            masked = adapter.mask_request(body, masker)
+            mask_request_ms = (time.perf_counter() - t_mask) * 1000
+            mask_calls = list(calls)
+    else:
+        masked = adapter.mask_request(body, masker)
     if debug:
         new_entries = masker.store.items()[store_before:]
         _log_request(upstream_config.name, api_path, body, masked, new_entries)
@@ -368,18 +397,51 @@ async def _handle_proxy(
                 """Track placeholder → unmasked substitutions."""
                 if upstream != client and upstream.startswith("<"):
                     substitutions[upstream] = substitutions.get(upstream, client)
+
+            upstream_byte_acc: list[bytes] | None = [] if capture is not None else None
+            downstream_byte_acc: list[bytes] | None = [] if capture is not None else None
+            stream_calls: list = []
+            scope = telemetry_scope() if capture is not None else contextlib.nullcontext(None)
             try:
-                async for out in adapter.transform_stream(
-                    _timed_aiter(upstream_resp.aiter_bytes(), upstream_acc),
-                    masker,
-                    on_substitution=track_substitution if debug else None,
-                ):
-                    yield out
+                with scope as calls:
+                    async for out in adapter.transform_stream(
+                        _timed_aiter(upstream_resp.aiter_bytes(), upstream_acc, upstream_byte_acc),
+                        masker,
+                        on_substitution=track_substitution if debug else None,
+                    ):
+                        if downstream_byte_acc is not None:
+                            downstream_byte_acc.append(out)
+                        yield out
+                    if calls is not None:
+                        stream_calls = list(calls)
             finally:
                 if debug:
                     _log_stream_substitutions(substitutions)
                 if metrics:
                     _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
+                if capture is not None:
+                    e2e_s = time.perf_counter() - t_start
+                    transform_ms = max(
+                        (e2e_s - upstream_acc[0]) * 1000 - (mask_request_ms or 0.0), 0.0
+                    )
+                    await capture.write({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "provider": upstream_config.name,
+                        "path": api_path,
+                        "streaming": True,
+                        "request": {"pre_mask": body, "post_mask": masked},
+                        "response": {
+                            "pre_unmask": b"".join(upstream_byte_acc or []).decode("utf-8", "replace"),
+                            "post_unmask": b"".join(downstream_byte_acc or []).decode("utf-8", "replace"),
+                        },
+                        "timing_ms": {
+                            "e2e": e2e_s * 1000,
+                            "upstream": upstream_acc[0] * 1000,
+                            "mask_request": mask_request_ms,
+                            "stream_transform": transform_ms,
+                            "detector_calls": mask_calls + stream_calls,
+                        },
+                    })
                 await upstream_resp.aclose()
 
         return StreamingResponse(
@@ -406,11 +468,37 @@ async def _handle_proxy(
         except ValueError:
             resp_json = None
         if resp_json is not None and upstream_resp.status_code < 400:
-            unmasked = adapter.unmask_response(resp_json, masker)
+            unmask_response_ms: float | None = None
+            unmask_calls: list = []
+            if capture is not None:
+                with telemetry_scope() as calls:
+                    t_unmask = time.perf_counter()
+                    unmasked = adapter.unmask_response(resp_json, masker)
+                    unmask_response_ms = (time.perf_counter() - t_unmask) * 1000
+                    unmask_calls = list(calls)
+            else:
+                unmasked = adapter.unmask_response(resp_json, masker)
             if debug:
                 _log_response(resp_json, unmasked)
             if metrics:
                 _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
+            if capture is not None:
+                e2e_s = time.perf_counter() - t_start
+                await capture.write({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "provider": upstream_config.name,
+                    "path": api_path,
+                    "streaming": False,
+                    "request": {"pre_mask": body, "post_mask": masked},
+                    "response": {"pre_unmask": resp_json, "post_unmask": unmasked},
+                    "timing_ms": {
+                        "e2e": e2e_s * 1000,
+                        "upstream": upstream_acc[0] * 1000,
+                        "mask_request": mask_request_ms,
+                        "unmask_response": unmask_response_ms,
+                        "detector_calls": mask_calls + unmask_calls,
+                    },
+                })
             return Response(
                 content=json.dumps(unmasked),
                 status_code=upstream_resp.status_code,
@@ -537,6 +625,13 @@ def main() -> None:
         help="Log per-turn latency breakdown (e2e, upstream, proxy) to stderr.",
     )
     parser.add_argument(
+        "--capture",
+        default=os.environ.get("ANON_PROXY_CAPTURE"),
+        metavar="PATH",
+        help="Append per-turn JSON records (request/response, both pre- and post-mask, "
+             "plus timing breakdown) to PATH. WARNING: contains UNMASKED PII.",
+    )
+    parser.add_argument(
         "--patterns",
         default=os.environ.get("ANON_PROXY_PATTERNS"),
         help="Path to a JSON file of additional regex patterns (label -> regex).",
@@ -617,7 +712,26 @@ def main() -> None:
         else None
     )
 
-    app = build_app(masker=masker, extra_upstreams=extra_upstreams, debug=args.debug, metrics=args.metrics)
+    capturer: Capturer | None = None
+    if args.capture:
+        try:
+            capturer = Capturer(args.capture)
+        except OSError as e:
+            print(f"error: cannot open capture file: {e}", file=sys.stderr)
+            sys.exit(2)
+        print(
+            f"WARNING: --capture writes UNMASKED request/response bodies to "
+            f"{args.capture} — treat as sensitive.",
+            file=sys.stderr,
+        )
+
+    app = build_app(
+        masker=masker,
+        extra_upstreams=extra_upstreams,
+        debug=args.debug,
+        metrics=args.metrics,
+        capture=capturer,
+    )
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
     backend_display = f"{args.backend}" if args.backend != "auto" else "auto-detect"
@@ -626,6 +740,7 @@ def main() -> None:
         f"  providers: {', '.join(all_providers)}\n"
         f"  debug: {args.debug}\n"
         f"  metrics: {args.metrics}\n"
+        f"  capture: {args.capture or '(off)'}\n"
         f"  patterns: {args.patterns or '(none)'}\n"
         f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
         f"  backend: {backend_display}\n"
