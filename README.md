@@ -133,6 +133,29 @@ uv run python -m anon_proxy.server \
   --debug
 ```
 
+## Docker
+
+A CPU-only image is provided (~330MB on x86_64, ~1.4GB on aarch64 — PyTorch's ARM wheel is chunkier). Model weights are **not** baked in; they're downloaded into `/models` on first run, so persist that volume to avoid re-downloading on every restart.
+
+```bash
+docker build -t anon-proxy:latest .
+docker run --rm -p 8080:8080 -v anon-proxy-models:/models anon-proxy:latest
+```
+
+**Mount points:**
+
+| Path | Purpose |
+|---|---|
+| `/config` | Read-only. Drop in `patterns.json` / `merge_gap.json`; the entrypoint auto-discovers them. |
+| `/models` | Read-write. `HF_HOME` — privacy-filter weights live here. Persist this. |
+| `/data`   | Read-write. Destination for `capture.jsonl` and other runtime output. |
+
+**Configuration:** every CLI flag also reads from an `ANON_PROXY_*` env var (`-e ANON_PROXY_DEBUG=true`, `-e ANON_PROXY_BACKEND=cpu`, etc.). Any extra args after the image name are forwarded to the server.
+
+**Kubernetes:** see the header comments in [`Dockerfile`](Dockerfile) for a pod-spec sketch with ConfigMap/PVC mounts. If you create a Service named `anon-proxy`, set `enableServiceLinks: false` on the pod — otherwise k8s injects `ANON_PROXY_PORT=tcp://...` and clobbers the app's own port env var.
+
+---
+
 ## Testing with the proxy
 
 Test the PII masking through the proxy using `test_mask.py`:

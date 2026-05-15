@@ -1,0 +1,26 @@
+.git/
+.venv/
+.python-version
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Capture output (contains UNMASKED PII)
+capture.jsonl
+*.jsonl
+data/
+
+# Local model caches (the image pre-downloads its own copy)
+.cache/
+.huggingface/
+
+# Editor / OS junk
+.idea/
+.vscode/
+.DS_Store
+
+# Tests / scripts not needed in the image
+test_*.py
+bench_replay.py
+.claude/
