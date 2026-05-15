@@ -44,6 +44,9 @@ _SKIP_MASK_PATTERNS = [
     # These can be extended as needed
 ]
 
+# Matches placeholder tokens emitted by PIIStore (see mapping.py: f"<{LABEL}_{N}>").
+_PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
+
 
 class Masker:
     """Composes PrivacyFilter + PIIStore to mask outgoing text and unmask LLM replies.
@@ -51,16 +54,18 @@ class Masker:
     One Masker instance per conversation: the store accumulates entities across
     turns so the same PII always gets the same placeholder.
 
-    `extra_detectors` is a list of objects with a `detect(text) -> list[PIIEntity]`
-    method whose spans are merged into the primary filter's output. Overlapping
-    spans from different detectors are resolved by preferring the longer span.
+    Detection runs in two passes: every detector in `extra_detectors` (typically
+    regex) runs first and its matches are substituted inline; then the ML model
+    runs on the partially-masked text. Regex hits therefore take precedence over
+    the model, and the model still sees full surrounding context (regex matches
+    appear as compact `<LABEL_N>` tokens). Within each pass, overlapping spans
+    are resolved by preferring the longer span (ties broken by score).
 
     Performance optimizations:
     - LRU caches detection results by content hash to avoid re-scanning identical text
     - LRU caches masked block-shaped objects by content hash so repeated message
       blocks (the common shape of conversation history) skip re-walking entirely
     - Skips masking for known non-PII patterns (e.g., system-reminders)
-    - Early-return if content already contains only placeholders (no new PII)
     """
 
     def __init__(
@@ -112,30 +117,26 @@ class Masker:
                 })
             return cached[1]
 
-        # Detect entities
-        entities: list[PIIEntity] = list(self._filter.detect(text))
+        # Pass 1: regex detectors first. Substitute matches inline so the ML
+        # model sees full context with regex-confirmed PII collapsed to short
+        # placeholder tokens — preserves transformer context, prevents the model
+        # from second-guessing high-precision regex hits.
+        regex_entities: list[PIIEntity] = []
         for detector in self._extra:
-            entities.extend(detector.detect(text))
-        entities = _resolve_overlaps(entities)
+            regex_entities.extend(detector.detect(text))
+        regex_entities = _resolve_overlaps(regex_entities)
+        intermediate = self._substitute(text, regex_entities)
 
-        # Early return if no entities found
-        if not entities:
-            self._cache_result(content_hash, [], text)
-            if record is not None:
-                record.append({
-                    "op": "mask", "chars": len(text),
-                    "ms": (time.perf_counter() - t0) * 1000,
-                    "cache_hit": False,
-                })
-            return text
+        # Pass 2: ML model on the regex-masked text. Defensively drop any span
+        # that intersects a placeholder token; substituting inside one would
+        # corrupt the token and break unmask.
+        ml_entities = _drop_placeholder_overlaps(
+            self._filter.detect(intermediate), intermediate,
+        )
+        ml_entities = _resolve_overlaps(ml_entities)
+        masked = self._substitute(intermediate, ml_entities)
 
-        # Replace right-to-left so earlier spans' offsets stay valid.
-        masked = text
-        for e in sorted(entities, key=lambda x: x.start, reverse=True):
-            token = self._store.get_or_create(e.label, e.text).token
-            masked = masked[: e.start] + token + masked[e.end :]
-
-        self._cache_result(content_hash, entities, masked)
+        self._cache_result(content_hash, regex_entities + ml_entities, masked)
         if record is not None:
             record.append({
                 "op": "mask", "chars": len(text),
@@ -150,6 +151,15 @@ class Masker:
         self._cache.move_to_end(content_hash)
         while len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)
+
+    def _substitute(self, text: str, entities: list[PIIEntity]) -> str:
+        """Replace entities with placeholder tokens, right-to-left so earlier
+        spans' offsets stay valid."""
+        masked = text
+        for e in sorted(entities, key=lambda x: x.start, reverse=True):
+            token = self._store.get_or_create(e.label, e.text).token
+            masked = masked[: e.start] + token + masked[e.end :]
+        return masked
 
     def mask_obj(self, obj: Any, walker: Callable[[Any], Any]) -> Any:
         """Mask a JSON-shaped value (typically a message or content block) with
@@ -236,6 +246,21 @@ class Masker:
             return transform(original) if original is not None else m.group(0)
 
         return pattern.sub(repl, text)
+
+
+def _drop_placeholder_overlaps(entities: list[PIIEntity], text: str) -> list[PIIEntity]:
+    """Drop entities whose spans intersect a placeholder token in `text`.
+
+    Touching boundaries (entity.end == placeholder.start or vice versa) are
+    allowed, matching the touching-is-not-overlap rule in `_resolve_overlaps`.
+    """
+    placeholders = [(m.start(), m.end()) for m in _PLACEHOLDER_RE.finditer(text)]
+    if not placeholders:
+        return list(entities)
+    return [
+        e for e in entities
+        if not any(e.start < pe and e.end > ps for ps, pe in placeholders)
+    ]
 
 
 def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:
