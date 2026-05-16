@@ -33,9 +33,10 @@ from starlette.routing import Mount, Route
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.capture import Capturer
+from anon_proxy.config import Config, load_config
 from anon_proxy.masker import Masker, telemetry_scope
-from anon_proxy.privacy_filter import PrivacyFilter, load_merge_gap
-from anon_proxy.regex_detector import RegexDetector, load_patterns
+from anon_proxy.privacy_filter import PrivacyFilter
+from anon_proxy.regex_detector import RegexDetector
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
 
 _DIM = "\033[2m"
@@ -632,15 +633,13 @@ def main() -> None:
              "plus timing breakdown) to PATH. WARNING: contains UNMASKED PII.",
     )
     parser.add_argument(
-        "--patterns",
-        default=os.environ.get("ANON_PROXY_PATTERNS"),
-        help="Path to a JSON file of additional regex patterns (label -> regex).",
-    )
-    parser.add_argument(
-        "--merge-gap-file",
-        default=os.environ.get("ANON_PROXY_MERGE_GAP"),
-        help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
-             "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
+        "--config",
+        default=os.environ.get("ANON_PROXY_CONFIG"),
+        metavar="PATH",
+        help="Path to config.json with optional keys: patterns (label -> regex), "
+             "merge_gap (label -> chars overriding DEFAULT_MERGE_GAP_ALLOWED), "
+             "ignore_labels (list of labels to skip masking on ML detections). "
+             "See README.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -681,34 +680,35 @@ def main() -> None:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(2)
 
-    extra_detectors = []
-    if args.patterns:
+    if args.config:
         try:
-            patterns = load_patterns(args.patterns)
+            cfg = load_config(args.config)
         except (OSError, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(2)
-        extra_detectors.append(RegexDetector(patterns))
+    else:
+        cfg = Config()
+
+    extra_detectors = []
+    if cfg.patterns:
+        try:
+            extra_detectors.append(RegexDetector(cfg.patterns))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
 
     pf: PrivacyFilter | None = None
-    if args.merge_gap_file or args.chunk_size != 1500 or args.backend != "auto":
-        merge_gap = None
-        if args.merge_gap_file:
-            try:
-                merge_gap = load_merge_gap(args.merge_gap_file)
-            except (OSError, ValueError) as e:
-                print(f"error: {e}", file=sys.stderr)
-                sys.exit(2)
+    if cfg.merge_gap or args.chunk_size != 1500 or args.backend != "auto":
         device = None if args.backend == "auto" else args.backend
         pf = PrivacyFilter(
-            merge_gap_allowed=merge_gap,
+            merge_gap_allowed=cfg.merge_gap or None,
             chunk_size=args.chunk_size,
             device=device,
         )
 
     masker = (
-        Masker(filter=pf, extra_detectors=extra_detectors)
-        if (pf is not None or extra_detectors)
+        Masker(filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels)
+        if (pf is not None or extra_detectors or cfg.ignore_labels)
         else None
     )
 
@@ -741,8 +741,7 @@ def main() -> None:
         f"  debug: {args.debug}\n"
         f"  metrics: {args.metrics}\n"
         f"  capture: {args.capture or '(off)'}\n"
-        f"  patterns: {args.patterns or '(none)'}\n"
-        f"  merge-gap-file: {args.merge_gap_file or '(defaults)'}\n"
+        f"  config: {args.config or '(None)'}\n"
         f"  backend: {backend_display}\n"
         f"\nUsage examples:\n"
         f"  Anthropic: base_url=http://{args.host}:{args.port}/anthropic\n"

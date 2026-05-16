@@ -1,6 +1,4 @@
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable
 
 from transformers import pipeline
@@ -199,26 +197,6 @@ def _gap_mergeable(
     if not allowed:
         return False
     return all(c in allowed for c in gap)
-
-
-def load_merge_gap(path: str | Path) -> dict[str, str]:
-    """Parse a merge-gap config JSON file into `{label: allowed_chars}`.
-
-    Shape: a flat JSON object mapping label -> string of allowed characters.
-    Empty string is allowed and means "only empty gap merges for this label".
-    Raises ValueError on bad shape.
-    """
-    raw = Path(path).read_text(encoding="utf-8")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{path}: invalid JSON — {e}") from e
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a JSON object mapping label -> chars")
-    bad = [k for k, v in data.items() if not (isinstance(k, str) and isinstance(v, str))]
-    if bad:
-        raise ValueError(f"{path}: non-string label or chars for keys: {bad!r}")
-    return data
 
 
 def _tighten(start: int, end: int, original: str) -> tuple[int, int]:

@@ -112,8 +112,7 @@ uv run python -m anon_proxy.server [options]
 | `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `mlx`) |
 | `--extra-upstream` | — | Add custom provider: `name=url[;adapter=anthropic\|openai][;path_prefix=/path]` |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
-| `--patterns <file>` | — | JSON file of extra regex detectors: `{"LABEL": "regex", ...}` |
-| `--merge-gap-file <file>` | — | JSON file overriding per-label adjacency merge chars (see `merge_gap.json.example`) |
+| `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
 
 **Add a custom provider:**
@@ -124,14 +123,37 @@ uv run python -m anon_proxy.server \
 
 Then use: `base_url=http://127.0.0.1:8080/myprovider`
 
-**With all config files:**
+**With config file:**
 ```bash
 uv run python -m anon_proxy.server \
-  --patterns patterns.json \
-  --merge-gap-file merge_gap.json \
+  --config config.json \
   --backend mps \
   --debug
 ```
+
+### Config file
+
+`config.json` is a single JSON object with three optional top-level keys:
+
+```json
+{
+  "patterns": {
+    "SSN":  "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+    "IPV4": "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
+  },
+  "merge_gap": {
+    "PERSON": " \t\n-'.",
+    "EMAIL":  ""
+  },
+  "ignore_labels": ["DATE", "TITLE"]
+}
+```
+
+- **`patterns`** — extra regex detectors for PII the ML model misses (SSNs, IPs, internal IDs). Run *before* the ML pass; matches are substituted inline so the model still sees full sentence context.
+- **`merge_gap`** — per-label characters allowed inside a gap when merging adjacent same-label spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token). Overrides entries in the model's defaults; labels you don't mention keep the default.
+- **`ignore_labels`** — labels detected by the ML model that should *not* be masked. Useful for noisy categories (e.g. `DATE`, `TITLE`) that confuse the upstream LLM more than they protect privacy. Regex matches are unaffected — if you don't want a regex label, just don't include it in `patterns`.
+
+See [`config.json`](config.json) at the repo root for a working example.
 
 ## Docker
 
@@ -146,7 +168,7 @@ docker run --rm -p 8080:8080 -v anon-proxy-models:/models anon-proxy:latest
 
 | Path | Purpose |
 |---|---|
-| `/config` | Read-only. Drop in `patterns.json` / `merge_gap.json`; the entrypoint auto-discovers them. |
+| `/config` | Read-only. Drop in `config.json`; the entrypoint auto-discovers it. |
 | `/models` | Read-write. `HF_HOME` — privacy-filter weights live here. Persist this. |
 | `/data`   | Read-write. Destination for `capture.jsonl` and other runtime output. |
 
@@ -227,17 +249,6 @@ With `--debug`, each request prints a compact diff to stderr:
 
 ---
 
-## Configuration files
-
-| File | Purpose |
-|---|---|
-| `patterns.json` | Extra regex patterns for PII the ML model misses (SSNs, IPs, internal IDs) |
-| `merge_gap.json` | Per-label chars allowed inside a gap when merging adjacent spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token) |
-
-Copy from the `.example` files to get started.
-
----
-
 ## FAQ
 
 ### How is this different from Microsoft Presidio?
@@ -258,11 +269,11 @@ Generally yes. Modern LLMs treat `<PERSON_1>` and `<EMAIL_1>` as opaque variable
 
 ### Does masking break tool calls?
 
-Tool inputs and tool results are masked/unmasked just like message text, so most tools work unchanged. Caveat: if a tool's behavior depends on the literal value of a PII string (e.g. a database lookup that takes an email), you'll want to register that field in `--patterns` carefully — or skip masking for that tool. Extended-thinking blocks are passed through unmasked because their cryptographic signatures would break.
+Tool inputs and tool results are masked/unmasked just like message text, so most tools work unchanged. Caveat: if a tool's behavior depends on the literal value of a PII string (e.g. a database lookup that takes an email), you'll want to register that field in the config's `patterns` carefully — or skip masking for that tool. Extended-thinking blocks are passed through unmasked because their cryptographic signatures would break.
 
 ### What PII does it detect?
 
-Out of the box: persons, emails, phone numbers, addresses, organizations, dates of birth, government IDs, and other categories from the openai/privacy-filter model. Add your own (SSN formats, internal employee IDs, project codenames) via `--patterns`.
+Out of the box: persons, emails, phone numbers, addresses, organizations, dates of birth, government IDs, and other categories from the openai/privacy-filter model. Add your own (SSN formats, internal employee IDs, project codenames) via the config's `patterns` section.
 
 ### What's the performance overhead?
 

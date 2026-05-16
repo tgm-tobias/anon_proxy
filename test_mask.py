@@ -36,7 +36,7 @@ from openai import OpenAI
 from prompt_toolkit import ANSI, PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 
-from anon_proxy import Masker, PrivacyFilter, RegexDetector, load_merge_gap, load_patterns
+from anon_proxy import Config, Masker, PrivacyFilter, RegexDetector, load_config
 
 
 # Provider configurations
@@ -132,15 +132,10 @@ def main() -> int:
              "Pair with *_BASE_URL to test the proxy's own masking.",
     )
     parser.add_argument(
-        "--patterns",
+        "--config",
         default=None,
-        help="Path to a JSON file of additional regex patterns (label -> regex).",
-    )
-    parser.add_argument(
-        "--merge-gap-file",
-        default=None,
-        help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
-             "Overrides entries in DEFAULT_MERGE_GAP_ALLOWED.",
+        metavar="PATH",
+        help="Path to config.json (patterns, merge_gap, ignore_labels). See README.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -172,25 +167,30 @@ def main() -> int:
         masker = None
     else:
         print("Loading openai/privacy-filter ...", file=sys.stderr)
-        extra_detectors = []
-        if args.patterns:
+        if args.config:
             try:
-                patterns = load_patterns(args.patterns)
+                cfg = load_config(args.config)
             except (OSError, ValueError) as e:
                 print(f"{RED}error:{RESET} {e}", file=sys.stderr)
                 return 2
-            extra_detectors.append(RegexDetector(patterns))
+        else:
+            cfg = Config()
+        extra_detectors = []
+        if cfg.patterns:
+            try:
+                extra_detectors.append(RegexDetector(cfg.patterns))
+            except ValueError as e:
+                print(f"{RED}error:{RESET} {e}", file=sys.stderr)
+                return 2
         pf: PrivacyFilter | None = None
-        if args.merge_gap_file or args.chunk_size != 1500:
-            merge_gap = None
-            if args.merge_gap_file:
-                try:
-                    merge_gap = load_merge_gap(args.merge_gap_file)
-                except (OSError, ValueError) as e:
-                    print(f"{RED}error:{RESET} {e}", file=sys.stderr)
-                    return 2
-            pf = PrivacyFilter(merge_gap_allowed=merge_gap, chunk_size=args.chunk_size)
-        masker = Masker(filter=pf, extra_detectors=extra_detectors)
+        if cfg.merge_gap or args.chunk_size != 1500:
+            pf = PrivacyFilter(
+                merge_gap_allowed=cfg.merge_gap or None,
+                chunk_size=args.chunk_size,
+            )
+        masker = Masker(
+            filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels,
+        )
 
     # Create client based on provider
     base_url = os.environ.get(base_url_env)

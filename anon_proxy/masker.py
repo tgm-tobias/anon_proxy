@@ -7,6 +7,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Protocol
 
+from anon_proxy.config import normalize_label
 from anon_proxy.mapping import PIIStore
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
@@ -74,12 +75,16 @@ class Masker:
         store: PIIStore | None = None,
         extra_detectors: list[Detector] | None = None,
         skip_patterns: list[re.Pattern] | None = None,
+        ignore_labels: frozenset[str] | set[str] | None = None,
         cache_size: int = 4096,
     ) -> None:
         self._filter = filter or PrivacyFilter()
         self._store = store or PIIStore()
         self._extra: list[Detector] = list(extra_detectors or [])
         self._skip_patterns = skip_patterns or _SKIP_MASK_PATTERNS
+        self._ignore_labels: frozenset[str] = frozenset(
+            normalize_label(s) for s in (ignore_labels or ())
+        )
         self._cache_size = cache_size
         # LRU cache: content_hash -> (entities, masked_text)
         self._cache: OrderedDict[str, tuple[list[PIIEntity], str]] = OrderedDict()
@@ -133,6 +138,11 @@ class Masker:
         ml_entities = _drop_placeholder_overlaps(
             self._filter.detect(intermediate), intermediate,
         )
+        if self._ignore_labels:
+            ml_entities = [
+                e for e in ml_entities
+                if normalize_label(e.label) not in self._ignore_labels
+            ]
         ml_entities = _resolve_overlaps(ml_entities)
         masked = self._substitute(intermediate, ml_entities)
 

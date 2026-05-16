@@ -6,7 +6,7 @@
 # Run (k8s pod sketch):
 #   volumes:
 #     - name: config
-#       configMap: { name: anon-proxy-config }   # patterns.json, merge_gap.json
+#       configMap: { name: anon-proxy-config }   # config.json
 #     - name: data
 #       persistentVolumeClaim: { claimName: anon-proxy-data }
 #     - name: models
@@ -64,7 +64,7 @@ RUN pip install .
 
 # 4. Mount points for runtime configuration, persistent capture/metrics output,
 #    and the HF model cache.
-#    /config: read-only ConfigMap with patterns.json / merge_gap.json
+#    /config: read-only ConfigMap with config.json
 #    /data:   read-write PVC for capture.jsonl
 #    /models: read-write PVC for HF_HOME — populated on first run, reused thereafter
 VOLUME ["/config", "/data", "/models"]

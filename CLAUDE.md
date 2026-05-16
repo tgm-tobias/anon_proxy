@@ -26,15 +26,17 @@ uv run python main.py [options]
 
 ## Architecture
 
-The codebase is organized into four core responsibilities that remain cleanly separable:
+The codebase is organized into five core responsibilities that remain cleanly separable:
 
 1. **`privacy_filter.py`** — Local PII detection using the OpenAI Privacy Filter model (HuggingFace). Handles chunking for long texts, adjacency merging for multi-word entities, and configurable per-label merge gap rules.
 
-2. **`regex_detector.py`** — Supplementary regex-based PII detector for patterns the ML model misses (SSNs, IPs, etc.). Loaded from optional `--patterns` JSON file.
+2. **`regex_detector.py`** — Supplementary regex-based PII detector for patterns the ML model misses (SSNs, IPs, etc.). Patterns come from the unified `config.json` (`patterns` section).
 
-3. **`mapping.py` + `masker.py`** — Persistent bidirectional mapping (`PIIStore`) and masking orchestration. Same entity gets same placeholder across requests. The `Masker` composes the PrivacyFilter with any extra detectors and handles overlap resolution.
+3. **`mapping.py` + `masker.py`** — Persistent bidirectional mapping (`PIIStore`) and masking orchestration. Same entity gets same placeholder across requests. The `Masker` runs regex detectors first and substitutes their matches inline, then runs the ML model on the partially-masked text — this preserves transformer context while letting high-precision regex hits take precedence. Also drops ML-detected entities whose label is in `ignore_labels`.
 
-4. **`server.py` + `adapters/`** — HTTP proxy (Starlette/Uvicorn) that applies mask on outbound and unmask on inbound. Currently Anthropic-specific; OpenAI adapter is planned (see README roadmap).
+4. **`config.py`** — Unified config loader. `Config` dataclass holds `patterns`, `merge_gap`, `ignore_labels`; `load_config(path)` parses and validates `config.json`.
+
+5. **`server.py` + `adapters/`** — HTTP proxy (Starlette/Uvicorn) that applies mask on outbound and unmask on inbound. Currently Anthropic-specific; OpenAI adapter is planned (see README roadmap).
 
 Key design invariants:
 - Masking layer should not know about HTTP
@@ -47,8 +49,7 @@ Server flags (all have `ANON_PROXY_*` env var equivalents):
 - `--host` / `--port` — bind address
 - `--upstream` — target API URL (default: Anthropic)
 - `--debug` — log masked/unmasked diffs to stderr
-- `--patterns <file>` — JSON file of extra regex detectors
-- `--merge-gap-file <file>` — per-label adjacency merge chars
+- `--config <file>` — unified `config.json` with optional keys `patterns` (extra regex detectors), `merge_gap` (per-label adjacency merge chars), `ignore_labels` (ML-detected labels to skip masking)
 - `--chunk-size <N>` — max chars per model inference pass (default: 1500)
 
 ## Toolchain

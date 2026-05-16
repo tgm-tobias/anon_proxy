@@ -13,7 +13,8 @@ import json
 import sys
 from collections.abc import Sequence
 
-from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter, load_merge_gap
+from anon_proxy.config import load_config
+from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
 YELLOW = "\033[93m"
 DIM = "\033[2m"
@@ -96,11 +97,11 @@ def main() -> int:
              "Examples: --merge-gap PERSON=\" -'.\" --merge-gap ADDRESS=,.#",
     )
     parser.add_argument(
-        "--merge-gap-file",
+        "--config",
         default=None,
         metavar="PATH",
-        help="Path to a JSON file of per-label merge-gap chars (label -> chars). "
-             "Loaded first; individual --merge-gap flags override matching labels.",
+        help="Path to config.json; the merge_gap section is loaded first, then "
+             "individual --merge-gap flags override matching labels.",
     )
     parser.add_argument(
         "--raw",
@@ -123,9 +124,9 @@ def main() -> int:
     args = parser.parse_args()
 
     merge_gap_allowed: dict[str, str] = {}
-    if args.merge_gap_file:
+    if args.config:
         try:
-            merge_gap_allowed.update(load_merge_gap(args.merge_gap_file))
+            merge_gap_allowed.update(load_config(args.config).merge_gap)
         except (OSError, ValueError) as e:
             parser.error(str(e))
     try:

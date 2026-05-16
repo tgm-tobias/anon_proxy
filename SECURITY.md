@@ -23,8 +23,8 @@ Please include:
 - A short description of what the bug allows.
 - Steps to reproduce, ideally with a minimal input (a prompt, a tool call, etc.)
   that demonstrates PII leaking past the masker.
-- The detector configuration you were running (default model, any `--patterns`
-  or `--merge-gap-file` overrides, `--backend` setting).
+- The detector configuration you were running (default model, any `config.json`
+  overrides for `patterns` / `merge_gap` / `ignore_labels`, `--backend` setting).
 - Your view on severity (does it leak in normal use, or only with a contrived
   setup?).
 
@@ -88,16 +88,16 @@ security reports for these — they are open trade-offs:
 
 - **Clue-less PII can be missed.** Bare phone numbers, isolated tokens, or
   out-of-context identifiers may evade the ML detector. Promote regex
-  detectors via `--patterns` to close gaps you observe.
+  detectors via the config's `patterns` section to close gaps you observe.
 - **Span fragmentation.** A single entity may be split into adjacent spans
-  ("Jean" + "Luc"). Adjust `--merge-gap-file` per label.
+  ("Jean" + "Luc"). Adjust the config's `merge_gap` per label.
 - **Chunk boundaries.** Long inputs are chunked at `--chunk-size`; PII
   straddling a boundary may lose context. Raise `--chunk-size` if you have
   the VRAM.
 - **Tool results that depend on literal values.** If a tool consumes a literal
   email or ID and round-trips it back, the masked placeholder may break the
-  tool's contract. Configure `--patterns` carefully or skip masking for the
-  affected tool.
+  tool's contract. Configure the `patterns` section carefully or skip masking
+  for the affected tool.
 
 ## Operational guidance
 
