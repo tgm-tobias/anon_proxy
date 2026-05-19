@@ -15,6 +15,9 @@ class PIIStore:
     Cross-turn consistency: the same entity (modulo casing / whitespace) always
     maps to the same token for the life of this store. The reverse map preserves
     the first-seen original form so un-masking restores the user's casing.
+
+    Not thread-safe — instances are expected to be used sequentially within a
+    single request or conversation.
     """
 
     def __init__(self) -> None:
@@ -23,7 +26,9 @@ class PIIStore:
         self._counters: dict[str, int] = {}
 
     def get_or_create(self, label: str, value: str) -> Placeholder:
-        normalized_label = _placeholder_label(label)
+        if not value or not value.strip():
+            raise ValueError("PIIStore.get_or_create: value must be non-empty after stripping whitespace")
+        normalized_label = normalize_label(label)
         key = (normalized_label, _canonical(value))
         existing = self._forward.get(key)
         if existing is not None:
@@ -56,6 +61,12 @@ def _canonical(value: str) -> str:
     return _WHITESPACE.sub(" ", value).strip().casefold()
 
 
-def _placeholder_label(label: str) -> str:
+def normalize_label(label: str) -> str:
+    """Canonical form for a PII label: strip the `private_` prefix the model
+    emits, then uppercase. Idempotent.
+
+    Single source of truth — `anon_proxy.config.normalize_label` and the rule
+    used by `Masker._ignore_labels` filtering re-export this function.
+    """
     trimmed = label[len("private_") :] if label.startswith("private_") else label
     return trimmed.upper()

@@ -2,6 +2,11 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Re-export so existing `from anon_proxy.config import normalize_label` keeps
+# working; the canonical definition lives next to PIIStore which owns the
+# placeholder format.
+from anon_proxy.mapping import normalize_label  # noqa: F401
+
 
 _ALLOWED_KEYS = frozenset({"patterns", "merge_gap", "ignore_labels"})
 
@@ -11,13 +16,6 @@ class Config:
     patterns: dict[str, str] = field(default_factory=dict)
     merge_gap: dict[str, str] = field(default_factory=dict)
     ignore_labels: frozenset[str] = field(default_factory=frozenset)
-
-
-def normalize_label(label: str) -> str:
-    """Match the rule used by mapping._placeholder_label so user-written
-    `ignore_labels` survive the case where the model returns `private_person`."""
-    trimmed = label[len("private_"):] if label.startswith("private_") else label
-    return trimmed.upper()
 
 
 def load_config(path: str | Path) -> Config:

@@ -7,8 +7,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Protocol
 
-from anon_proxy.config import normalize_label
-from anon_proxy.mapping import PIIStore
+from anon_proxy.mapping import PIIStore, normalize_label
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
 
