@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Iterable
 
 from transformers import pipeline
 
@@ -80,11 +79,15 @@ class PrivacyFilter:
         self._chunk_size = chunk_size
 
     def detect(self, text: str) -> list[PIIEntity]:
+        if not text.strip():
+            return []
         chunks = _split_chunks(text, self._chunk_size)
         entities: list[PIIEntity] = []
         for offset, chunk in chunks:
             for r in self._pipe(chunk):
                 e = _to_entity(r, chunk)
+                if e is None:
+                    continue
                 entities.append(PIIEntity(
                     label=e.label,
                     text=e.text,
@@ -99,23 +102,6 @@ class PrivacyFilter:
     def detect_raw(self, text: str) -> list[dict]:
         """Return the pipeline's untouched per-span dicts for debugging."""
         return list(self._pipe(text))
-
-    def detect_batch(self, texts: Iterable[str]) -> list[list[PIIEntity]]:
-        texts = list(texts)
-        if not texts:
-            return []
-        # If any text exceeds the chunk limit, fall back to per-text detect()
-        # so chunking is applied correctly for each one.
-        if any(len(t) > self._chunk_size for t in texts):
-            return [self.detect(t) for t in texts]
-        results = self._pipe(texts)
-        out: list[list[PIIEntity]] = []
-        for t, res in zip(texts, results):
-            entities = [_to_entity(r, t) for r in res]
-            if self._merge_adjacent:
-                entities = _merge_adjacent_entities(entities, t, self._gap_allowed)
-            out.append(entities)
-        return out
 
 
 def _split_chunks(text: str, max_chars: int) -> list[tuple[int, str]]:
@@ -143,8 +129,10 @@ def _split_chunks(text: str, max_chars: int) -> list[tuple[int, str]]:
     return chunks
 
 
-def _to_entity(raw: dict, original: str) -> PIIEntity:
+def _to_entity(raw: dict, original: str) -> PIIEntity | None:
     start, end = _tighten(int(raw["start"]), int(raw["end"]), original)
+    if start == end:
+        return None
     label = raw.get("entity_group") or raw["entity"]
     return PIIEntity(
         label=label,

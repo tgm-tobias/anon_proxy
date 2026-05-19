@@ -255,16 +255,16 @@ class TestDetectChunking:
         assert all(isinstance(c, str) for c in fake_pipeline.calls)
 
     def test_cross_chunk_adjacency_merge(self, make_filter, fake_pipeline):
-        # Build a text where the same-label entity ends one chunk and starts the next.
-        # chunk_size=12, text="Alice  Smith hi" → chunks: ?
-        # rfind(" ", 0, 12) → space at 5 (after "Alice"), so split there +1=6.
-        # → [(0,"Alice "), (6,"Smith hi")]
-        text = "Alice Smith hi"
-        fake_pipeline.set("Alice ", [span("PERSON", 0, 5, score=0.8)])  # "Alice"
-        fake_pipeline.set("Smith hi", [span("PERSON", 0, 5, score=0.7)])  # "Smith"
-        f = make_filter(chunk_size=12)
+        # chunk_size=7, text="Alice Smith":
+        #   rfind(" ", 0, 7) = 5 → split at 6.
+        #   chunks = [(0, "Alice "), (6, "Smith")]
+        # Each chunk yields one PERSON span; the gap between them in the
+        # original is " " (allowed for PERSON), so they merge.
+        text = "Alice Smith"
+        fake_pipeline.set("Alice ", [span("PERSON", 0, 5, score=0.8)])
+        fake_pipeline.set("Smith", [span("PERSON", 0, 5, score=0.7)])
+        f = make_filter(chunk_size=7)
         out = f.detect(text)
-        # Both chunks emit PERSON spans adjacent across the boundary → merged.
         assert len(out) == 1
         merged = out[0]
         assert merged.label == "PERSON"
