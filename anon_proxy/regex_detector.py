@@ -16,7 +16,18 @@ from anon_proxy.privacy_filter import PIIEntity
 
 
 class RegexDetector:
-    """Emits PIIEntity spans for every match of each configured pattern."""
+    """Emits PIIEntity spans for every match of each configured pattern.
+
+    Output ordering is pattern-first (dict insertion order), match-second
+    (left-to-right within each pattern). Overlap and duplicate resolution
+    across patterns is the Masker's responsibility — this layer emits every
+    non-zero-length match it finds.
+
+    TODO: support multiple regex patterns per label. The constructor signature
+    is currently `dict[str, str]`, which forces one pattern per label. A future
+    revision may accept `dict[str, list[str]]` or `list[tuple[str, str]]` so
+    a single label (e.g. "EMAIL") can have several pattern variants.
+    """
 
     def __init__(self, patterns: dict[str, str]) -> None:
         compiled: list[tuple[str, re.Pattern[str]]] = []
@@ -31,6 +42,8 @@ class RegexDetector:
         self._patterns = compiled
 
     def detect(self, text: str) -> list[PIIEntity]:
+        if not self._patterns or not text.strip():
+            return []
         out: list[PIIEntity] = []
         for label, rx in self._patterns:
             for m in rx.finditer(text):
