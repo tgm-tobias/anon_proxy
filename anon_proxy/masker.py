@@ -273,30 +273,32 @@ def _drop_placeholder_overlaps(entities: list[PIIEntity], text: str) -> list[PII
 
 
 def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:
-    """Keep a non-overlapping subset of spans.
+    """Keep a non-overlapping subset of spans (longest-first selection).
 
-    Greedy: sort by (start, -length, -score) so earlier and longer spans land first.
-    Walk left-to-right; when a span overlaps the last kept, replace only if the
-    new one is strictly longer (ties: higher score wins). Touching spans at
-    `prev.end == next.start` do not overlap.
+    Sort by (-length, -score, start, label) so longer, then higher-confidence,
+    then earlier, then alphabetically-labeled spans are considered first. Walk
+    the sorted list; keep each candidate iff it does not overlap any already-
+    kept span. Touching at boundaries (`prev.end == next.start`) does not count
+    as overlap. Return kept spans sorted by start position so callers can
+    substitute right-to-left.
+
+    This replaces the previous greedy-by-start algorithm, which could drop a
+    span that did not actually conflict with the eventual winner (e.g. given
+    A=[0,5], B=[4,10], C=[7,15] the old algorithm chained A→B→C and lost A,
+    even though A and C do not overlap).
     """
     if not entities:
-        return entities
-    ordered = sorted(
+        return []
+    candidates = sorted(
         entities,
-        key=lambda e: (e.start, -(e.end - e.start), -e.score, e.label),
+        key=lambda e: (-(e.end - e.start), -e.score, e.start, e.label),
     )
     kept: list[PIIEntity] = []
-    for e in ordered:
-        if kept and e.start < kept[-1].end:
-            prev = kept[-1]
-            prev_len = prev.end - prev.start
-            cur_len = e.end - e.start
-            if cur_len > prev_len or (cur_len == prev_len and e.score > prev.score):
-                kept[-1] = e
+    for e in candidates:
+        if any(e.start < k.end and e.end > k.start for k in kept):
             continue
         kept.append(e)
-    return kept
+    return sorted(kept, key=lambda e: e.start)
 
 
 def _hash_content(text: str) -> str:
