@@ -12,7 +12,9 @@ Sub-phases will accumulate here:
 
 from __future__ import annotations
 
-from anon_proxy.masker import _resolve_overlaps
+import re
+
+from anon_proxy.masker import _drop_placeholder_overlaps, _resolve_overlaps
 from anon_proxy.privacy_filter import PIIEntity
 from anon_proxy.regex_detector import RegexDetector
 
@@ -296,5 +298,185 @@ class TestSubstitutionMechanics:
             ],
         )
         masked = m.mask(text)
-        # Different canonical values → different indices.
+        # Different canonical values → different indices. Leftmost gets _1.
         assert masked == "<PERSON_1> met <PERSON_2>"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c: placeholder overlap defense + skip patterns.
+#
+# After the ML pass detects on the regex-masked intermediate, any ML entity
+# whose span intersects a `<LABEL_N>` placeholder must be dropped — otherwise
+# substituting it would corrupt the token and break unmask. Touching at the
+# boundary (entity.end == placeholder.start, or vice versa) is NOT overlap.
+#
+# Separately, skip_patterns are a fast-path bypass: when ANY pattern matches
+# the input via search(), mask() returns the input unchanged, before cache,
+# before either pass.
+# ---------------------------------------------------------------------------
+
+
+# ----- _drop_placeholder_overlaps unit tests --------------------------------
+
+
+class TestDropPlaceholderOverlapsTrivial:
+    def test_empty_entities_returns_empty(self):
+        assert _drop_placeholder_overlaps([], "no placeholders here") == []
+
+    def test_text_with_no_placeholders_is_identity(self):
+        e = ent("PERSON", 0, 5)
+        assert _drop_placeholder_overlaps([e], "hello there") == [e]
+
+
+class TestDropPlaceholderOverlapsCoverage:
+    """Geometry around a single placeholder at positions [5, 15)."""
+
+    TEXT = "abcde<PERSON_1>fghij"  # placeholder at indices 5..15
+
+    def test_entity_fully_inside_placeholder_dropped(self):
+        # entity at [7, 12) — both ends strictly inside placeholder
+        e = ent("PERSON", 7, 12)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == []
+
+    def test_entity_partial_left_overlap_dropped(self):
+        # entity at [3, 10) — starts before, ends inside
+        e = ent("PERSON", 3, 10)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == []
+
+    def test_entity_partial_right_overlap_dropped(self):
+        # entity at [10, 18) — starts inside, ends after
+        e = ent("PERSON", 10, 18)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == []
+
+    def test_entity_engulfing_placeholder_dropped(self):
+        # entity at [3, 18) — surrounds placeholder
+        e = ent("PERSON", 3, 18)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == []
+
+    def test_entity_touching_placeholder_start_kept(self):
+        # entity at [0, 5) — entity.end == placeholder.start
+        e = ent("PERSON", 0, 5)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == [e]
+
+    def test_entity_touching_placeholder_end_kept(self):
+        # entity at [15, 20) — entity.start == placeholder.end
+        e = ent("PERSON", 15, 20)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == [e]
+
+    def test_entity_outside_placeholder_kept(self):
+        # entity at [16, 20) — well clear of placeholder
+        e = ent("PERSON", 16, 20)
+        assert _drop_placeholder_overlaps([e], self.TEXT) == [e]
+
+
+class TestDropPlaceholderOverlapsMultiple:
+    def test_multiple_placeholders_overlap_with_any_drops(self):
+        text = "<PERSON_1> bridge <EMAIL_2>"
+        # placeholder 1 at [0, 10), placeholder 2 at [18, 27)
+        inside_first = ent("PERSON", 2, 5)      # inside p1
+        between = ent("PERSON", 11, 17)         # outside both
+        inside_second = ent("PERSON", 20, 25)   # inside p2
+        out = _drop_placeholder_overlaps([inside_first, between, inside_second], text)
+        assert out == [between]
+
+    def test_pattern_must_match_placeholder_regex(self):
+        # `<foo>` is NOT a placeholder token (label must start uppercase, and
+        # there must be `_<digits>`). Defense leaves entities overlapping it
+        # alone.
+        text = "abc <foo> def"
+        e = ent("PERSON", 4, 9)  # spans "<foo>"
+        assert _drop_placeholder_overlaps([e], text) == [e]
+
+
+# ----- placeholder defense via mask() ---------------------------------------
+
+
+class TestPlaceholderDefenseInMask:
+    def test_ml_detecting_inside_placeholder_text_is_dropped(
+        self, make_masker, fake_pipeline
+    ):
+        # Regex collapses "555-1212" to <PHONE_1>; the ML model then happens
+        # to flag "PHONE" inside the placeholder as an ENTITY. The defense
+        # drops that bogus span so the placeholder survives.
+        detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
+        m = make_masker(extra_detectors=[detector])
+        text = "Call 555-1212 now"
+        intermediate = "Call <PHONE_1> now"
+        # Bogus ML detection at [6, 11) covers "PHONE" inside the placeholder.
+        fake_pipeline.set(intermediate, [span("PERSON", 6, 11, score=0.9)])
+        masked = m.mask(text)
+        assert masked == intermediate
+
+
+# ----- skip_patterns --------------------------------------------------------
+
+
+class TestSkipPatternsDefault:
+    def test_system_reminder_block_skipped(self, make_filter, fake_pipeline, store):
+        # Reach for the default skip patterns (skip_patterns=None) — the test
+        # helper defangs them by default, so this test uses Masker directly.
+        from anon_proxy.masker import Masker
+
+        m = Masker(filter=make_filter(), store=store)  # default skip_patterns
+        text = "<system-reminder>some content</system-reminder>"
+        assert m.mask(text) == text
+        assert fake_pipeline.calls == []  # neither pass ran
+
+    def test_system_reminder_with_leading_whitespace_still_skips(
+        self, make_filter, fake_pipeline, store
+    ):
+        from anon_proxy.masker import Masker
+
+        m = Masker(filter=make_filter(), store=store)
+        text = "   <system-reminder>x</system-reminder>"
+        assert m.mask(text) == text
+        assert fake_pipeline.calls == []
+
+
+class TestSkipPatternsCustom:
+    def test_custom_pattern_overrides_default(
+        self, make_masker, fake_pipeline
+    ):
+        # System-reminder is NOT in the custom list, so it should now mask
+        # through normally.
+        m = make_masker(skip_patterns=[re.compile(r"^IGNORE:")])
+        text = "<system-reminder>x</system-reminder>"
+        # ML returns nothing → mask is a no-op for this text, but the
+        # pipeline IS called (proving the skip didn't fire).
+        fake_pipeline.set(text, [])
+        m.mask(text)
+        assert fake_pipeline.calls == [text]
+
+    def test_custom_pattern_triggers_skip(self, make_masker, fake_pipeline):
+        m = make_masker(skip_patterns=[re.compile(r"^IGNORE:")])
+        text = "IGNORE: do not mask Alice"
+        assert m.mask(text) == text
+        assert fake_pipeline.calls == []
+
+    def test_empty_list_disables_skipping(
+        self, make_filter, fake_pipeline, store
+    ):
+        from anon_proxy.masker import Masker
+
+        # Defaults would skip system-reminder; empty list disables that.
+        m = Masker(filter=make_filter(), store=store, skip_patterns=[])
+        text = "<system-reminder>x</system-reminder>"
+        fake_pipeline.set(text, [])
+        m.mask(text)
+        assert fake_pipeline.calls == [text]
+
+
+class TestSkipPatternsNotCached:
+    """Skip-matched text returns input directly; subsequent calls re-evaluate
+    the skip pattern rather than returning a cached result."""
+
+    def test_repeated_skip_calls_do_not_invoke_pipeline(
+        self, make_filter, fake_pipeline, store
+    ):
+        from anon_proxy.masker import Masker
+
+        m = Masker(filter=make_filter(), store=store)
+        text = "<system-reminder>x</system-reminder>"
+        for _ in range(3):
+            assert m.mask(text) == text
+        assert fake_pipeline.calls == []

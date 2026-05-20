@@ -80,7 +80,9 @@ class Masker:
         self._filter = filter if filter is not None else PrivacyFilter()
         self._store = store if store is not None else PIIStore()
         self._extra: list[Detector] = list(extra_detectors or [])
-        self._skip_patterns = skip_patterns or _SKIP_MASK_PATTERNS
+        self._skip_patterns = (
+            skip_patterns if skip_patterns is not None else _SKIP_MASK_PATTERNS
+        )
         self._ignore_labels: frozenset[str] = frozenset(
             normalize_label(s) for s in (ignore_labels or ())
         )
