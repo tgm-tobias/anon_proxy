@@ -18,14 +18,14 @@ class PIIEntity:
 DEFAULT_MERGE_GAP_ALLOWED: dict[str, str] = {
     # Names: space for "Alice Smith", hyphen for "Jean-Luc", apostrophe for
     # "O'Neil", period for "J.R.".
-    "PERSON":       " \t\n-'.",
+    "PERSON": " \t\n-'.",
     # Addresses: whitespace plus the punctuation that commonly splits a
     # single postal address — "123 Main St., Apt #4", "Suite 3B-1".
-    "ADDRESS":      " \t\n,.#-/",
+    "ADDRESS": " \t\n,.#-/",
     # Dates: "Jan 1, 2025", "2025-01-01", "1/1/25".
-    "DATE":         " \t\n,/.-",
+    "DATE": " \t\n,/.-",
     "ORGANIZATION": " \t\n&.,-",
-    "LOCATION":     " \t\n,.-",
+    "LOCATION": " \t\n,.-",
 }
 
 
@@ -88,13 +88,15 @@ class PrivacyFilter:
                 e = _to_entity(r, chunk)
                 if e is None:
                     continue
-                entities.append(PIIEntity(
-                    label=e.label,
-                    text=e.text,
-                    start=e.start + offset,
-                    end=e.end + offset,
-                    score=e.score,
-                ))
+                entities.append(
+                    PIIEntity(
+                        label=e.label,
+                        text=e.text,
+                        start=e.start + offset,
+                        end=e.end + offset,
+                        score=e.score,
+                    )
+                )
         if self._merge_adjacent:
             entities = _merge_adjacent_entities(entities, text, self._gap_allowed)
         return entities

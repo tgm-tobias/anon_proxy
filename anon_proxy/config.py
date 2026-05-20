@@ -59,7 +59,9 @@ def load_config(path: str | Path) -> Config:
 def _str_dict(value: object, path: str | Path, field: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: {field!r} must be a JSON object of string -> string")
-    bad = [k for k, v in value.items() if not (isinstance(k, str) and isinstance(v, str))]
+    bad = [
+        k for k, v in value.items() if not (isinstance(k, str) and isinstance(v, str))
+    ]
     if bad:
         raise ValueError(f"{path}: {field!r} has non-string entries for keys: {bad!r}")
     return dict(value)

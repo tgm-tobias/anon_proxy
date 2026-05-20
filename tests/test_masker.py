@@ -23,7 +23,9 @@ from .conftest import span
 
 def ent(label: str, start: int, end: int, score: float = 0.9) -> PIIEntity:
     """Small helper. `text` is filler — overlap resolution ignores it."""
-    return PIIEntity(label=label, text="x" * (end - start), start=start, end=end, score=score)
+    return PIIEntity(
+        label=label, text="x" * (end - start), start=start, end=end, score=score
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +224,9 @@ class TestMlOnlyPath:
 
 
 class TestRegexAndMlCombined:
-    def test_independent_regions_each_pass_contributes(self, make_masker, fake_pipeline):
+    def test_independent_regions_each_pass_contributes(
+        self, make_masker, fake_pipeline
+    ):
         detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
         m = make_masker(extra_detectors=[detector])
         text = "Call 555-1212 about Bob"
@@ -293,8 +297,8 @@ class TestSubstitutionMechanics:
         fake_pipeline.set(
             text,
             [
-                span("PERSON", 0, 5, score=0.9),   # "Alice"
-                span("PERSON", 10, 13, score=0.9), # "Bob"
+                span("PERSON", 0, 5, score=0.9),  # "Alice"
+                span("PERSON", 10, 13, score=0.9),  # "Bob"
             ],
         )
         masked = m.mask(text)
@@ -373,9 +377,9 @@ class TestDropPlaceholderOverlapsMultiple:
     def test_multiple_placeholders_overlap_with_any_drops(self):
         text = "<PERSON_1> bridge <EMAIL_2>"
         # placeholder 1 at [0, 10), placeholder 2 at [18, 27)
-        inside_first = ent("PERSON", 2, 5)      # inside p1
-        between = ent("PERSON", 11, 17)         # outside both
-        inside_second = ent("PERSON", 20, 25)   # inside p2
+        inside_first = ent("PERSON", 2, 5)  # inside p1
+        between = ent("PERSON", 11, 17)  # outside both
+        inside_second = ent("PERSON", 20, 25)  # inside p2
         out = _drop_placeholder_overlaps([inside_first, between, inside_second], text)
         assert out == [between]
 
@@ -434,9 +438,7 @@ class TestSkipPatternsDefault:
 
 
 class TestSkipPatternsCustom:
-    def test_custom_pattern_overrides_default(
-        self, make_masker, fake_pipeline
-    ):
+    def test_custom_pattern_overrides_default(self, make_masker, fake_pipeline):
         # System-reminder is NOT in the custom list, so it should now mask
         # through normally.
         m = make_masker(skip_patterns=[re.compile(r"^IGNORE:")])
@@ -453,9 +455,7 @@ class TestSkipPatternsCustom:
         assert m.mask(text) == text
         assert fake_pipeline.calls == []
 
-    def test_empty_list_disables_skipping(
-        self, make_filter, fake_pipeline, store
-    ):
+    def test_empty_list_disables_skipping(self, make_filter, fake_pipeline, store):
         from anon_proxy.masker import Masker
 
         # Defaults would skip system-reminder; empty list disables that.
@@ -508,17 +508,13 @@ class TestIgnoreLabelsBasics:
 
 
 class TestIgnoreLabelsFilters:
-    def test_ml_entity_with_ignored_label_is_dropped(
-        self, make_masker, fake_pipeline
-    ):
+    def test_ml_entity_with_ignored_label_is_dropped(self, make_masker, fake_pipeline):
         m = make_masker(ignore_labels={"PERSON"})
         text = "Hello Alice"
         fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
         assert m.mask(text) == "Hello Alice"  # PERSON suppressed
 
-    def test_ml_entity_with_other_label_still_masked(
-        self, make_masker, fake_pipeline
-    ):
+    def test_ml_entity_with_other_label_still_masked(self, make_masker, fake_pipeline):
         m = make_masker(ignore_labels={"EMAIL"})
         text = "Hello Alice"
         fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
@@ -548,9 +544,7 @@ class TestIgnoreLabelsNormalization:
         m = make_masker(ignore_labels={"PERSON"})
         text = "Hello Alice"
         # Model emits `private_person`; filter must still catch it.
-        fake_pipeline.set(
-            text, [span("private_person", 6, 11, score=0.9)]
-        )
+        fake_pipeline.set(text, [span("private_person", 6, 11, score=0.9)])
         assert m.mask(text) == "Hello Alice"
 
 
@@ -630,7 +624,8 @@ class TestUnmaskBasics:
 
     def test_multiple_tokens_replaced(self, make_filter, store):
         m = _masker_with_known_tokens(
-            make_filter, store,
+            make_filter,
+            store,
             ("PERSON", "Alice"),
             ("EMAIL", "alice@example.com"),
         )
@@ -675,12 +670,10 @@ class TestUnmaskJson:
         assert out == 'name: Alice \\"the great\\"'
 
     def test_replacement_with_backslash_is_escaped(self, make_filter, store):
-        m = _masker_with_known_tokens(
-            make_filter, store, ("PATH", r"C:\users\alice")
-        )
+        m = _masker_with_known_tokens(make_filter, store, ("PATH", r"C:\users\alice"))
         out = m.unmask_json("p: <PATH_1>")
         # Backslashes are doubled in JSON string context.
-        assert out == 'p: C:\\\\users\\\\alice'
+        assert out == "p: C:\\\\users\\\\alice"
 
     def test_replacement_with_newline_is_escaped(self, make_filter, store):
         m = _masker_with_known_tokens(make_filter, store, ("NOTE", "line1\nline2"))

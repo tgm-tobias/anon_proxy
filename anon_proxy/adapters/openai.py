@@ -107,7 +107,10 @@ def _mask_tool_call(tool_call: dict, masker: Masker) -> dict:
                 result["function"] = {**function, "arguments": masker.mask(args)}
         elif isinstance(args, dict):
             # Arguments as object (some variations)
-            result["function"] = {**function, "arguments": _walk_strings(args, masker.mask)}
+            result["function"] = {
+                **function,
+                "arguments": _walk_strings(args, masker.mask),
+            }
     return result
 
 
@@ -123,7 +126,9 @@ def _mask_tool(tool: dict, masker: Masker) -> dict:
     if isinstance(function, dict):
         masked_func = dict(function)
         if isinstance(function.get("parameters"), dict):
-            masked_func["parameters"] = _walk_strings(function["parameters"], masker.mask)
+            masked_func["parameters"] = _walk_strings(
+                function["parameters"], masker.mask
+            )
         result["function"] = masked_func
     return result
 
@@ -180,7 +185,10 @@ def _unmask_tool_call(tool_call: dict, masker: Masker) -> dict:
             except json.JSONDecodeError:
                 result["function"] = {**function, "arguments": masker.unmask(args)}
         elif isinstance(args, dict):
-            result["function"] = {**function, "arguments": _walk_strings(args, masker.unmask)}
+            result["function"] = {
+                **function,
+                "arguments": _walk_strings(args, masker.unmask),
+            }
     return result
 
 
@@ -198,7 +206,11 @@ def _walk_strings(value, transform):
 # Stream handling for OpenAI
 _STREAM_HANDLERS: dict[str, dict] = {
     "content": {"delta_key": "content", "content_field": "content", "escape": False},
-    "tool_calls": {"delta_key": "tool_calls", "content_field": "arguments", "escape": True},
+    "tool_calls": {
+        "delta_key": "tool_calls",
+        "content_field": "arguments",
+        "escape": True,
+    },
 }
 
 
@@ -237,7 +249,10 @@ async def transform_stream(
                     if on_substitution and buffered != unmasked:
                         on_substitution(buffered, unmasked)
                     # Yield a synthetic event with the buffered content
-                    yield _serialize_sse(event_type, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
+                    yield _serialize_sse(
+                        event_type,
+                        json.dumps({"choices": [{"delta": {"content": unmasked}}]}),
+                    )
                     content_buffer[0] = ""
                 yield _serialize_sse(event_type, data_str)
                 continue
@@ -258,7 +273,9 @@ async def transform_stream(
         unmasked = masker.unmask(buffered)
         if on_substitution and buffered != unmasked:
             on_substitution(buffered, unmasked)
-        yield _serialize_sse(None, json.dumps({"choices": [{"delta": {"content": unmasked}}]}))
+        yield _serialize_sse(
+            None, json.dumps({"choices": [{"delta": {"content": unmasked}}]})
+        )
 
     if raw.strip():
         yield raw

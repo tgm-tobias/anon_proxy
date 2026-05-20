@@ -114,8 +114,12 @@ def _walk_strings(value, transform):
 # - field: the field name within the delta that contains the content
 # - escape: whether to JSON-escape unmasked values (for tool_use partial JSON)
 _STREAM_HANDLERS: dict[str, dict] = {
-    "text":     {"delta_type": "text_delta",       "field": "text",         "escape": False},
-    "tool_use": {"delta_type": "input_json_delta", "field": "partial_json", "escape": True},
+    "text": {"delta_type": "text_delta", "field": "text", "escape": False},
+    "tool_use": {
+        "delta_type": "input_json_delta",
+        "field": "partial_json",
+        "escape": True,
+    },
 }
 
 
@@ -154,7 +158,11 @@ async def transform_stream(
             event_bytes, raw = raw.split(b"\n\n", 1)
             event_type, data_str = _parse_sse(event_bytes)
             for out_event, out_data in _transform_event(
-                event_type, data_str, masker, blocks, on_substitution,
+                event_type,
+                data_str,
+                masker,
+                blocks,
+                on_substitution,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():

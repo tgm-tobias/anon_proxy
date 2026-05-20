@@ -27,7 +27,9 @@ class PIIStore:
 
     def get_or_create(self, label: str, value: str) -> Placeholder:
         if not value or not value.strip():
-            raise ValueError("PIIStore.get_or_create: value must be non-empty after stripping whitespace")
+            raise ValueError(
+                "PIIStore.get_or_create: value must be non-empty after stripping whitespace"
+            )
         normalized_label = normalize_label(label)
         key = (normalized_label, _canonical(value))
         existing = self._forward.get(key)

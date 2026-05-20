@@ -143,7 +143,11 @@ class TestMaskRequestBlockListContent:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "tool_result", "tool_use_id": "x", "content": "from Alice"}
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "x",
+                            "content": "from Alice",
+                        }
                     ],
                 }
             ]
@@ -357,6 +361,14 @@ class TestUnmaskResponseBlocks:
         out = anth.unmask_response(body, masker)
         assert out["content"][0]["text"] == "Reply to Alice"
         # All other fields preserved verbatim.
-        for k in ("id", "type", "role", "model", "stop_reason", "stop_sequence",
-                  "usage", "context_management"):
+        for k in (
+            "id",
+            "type",
+            "role",
+            "model",
+            "stop_reason",
+            "stop_sequence",
+            "usage",
+            "context_management",
+        ):
             assert out[k] == body[k], f"field {k} not preserved"

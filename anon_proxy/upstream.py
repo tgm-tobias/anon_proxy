@@ -57,7 +57,9 @@ BUILT_IN_UPSTREAMS: dict[str, UpstreamConfig] = {
 }
 
 
-def get_upstream_config(provider: str, extra_upstreams: dict[str, UpstreamConfig] | None = None) -> UpstreamConfig:
+def get_upstream_config(
+    provider: str, extra_upstreams: dict[str, UpstreamConfig] | None = None
+) -> UpstreamConfig:
     """Get upstream configuration for a provider.
 
     Args:
@@ -73,5 +75,7 @@ def get_upstream_config(provider: str, extra_upstreams: dict[str, UpstreamConfig
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
     config = all_upstreams.get(provider)
     if config is None:
-        raise ValueError(f"Unknown upstream provider: {provider}. Available: {sorted(all_upstreams)}")
+        raise ValueError(
+            f"Unknown upstream provider: {provider}. Available: {sorted(all_upstreams)}"
+        )
     return config

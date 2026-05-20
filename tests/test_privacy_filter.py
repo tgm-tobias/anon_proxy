@@ -190,7 +190,15 @@ class TestDetectScoreAndTypes:
         text = "Alice"
         fake_pipeline.set(
             text,
-            [{"entity_group": "PERSON", "start": "0", "end": "5", "word": "", "score": "0.9"}],
+            [
+                {
+                    "entity_group": "PERSON",
+                    "start": "0",
+                    "end": "5",
+                    "word": "",
+                    "score": "0.9",
+                }
+            ],
         )
         f = make_filter()
         [e] = f.detect(text)
@@ -206,7 +214,9 @@ class TestDetectIsPlaceholderAgnostic:
     (covered in Phase 3c), NOT here.
     """
 
-    def test_placeholder_string_passes_through_unchanged(self, make_filter, fake_pipeline):
+    def test_placeholder_string_passes_through_unchanged(
+        self, make_filter, fake_pipeline
+    ):
         # The fake pipeline is asked to flag the placeholder substring; the
         # filter must surface it as-is (no special-casing).
         text = "Hi <PERSON_1> there"
@@ -236,8 +246,10 @@ class TestDetectChunking:
     def test_offsets_shifted_by_chunk_start(self, make_filter, fake_pipeline):
         # chunk_size=10, text="hello world foo" → chunks = [(0,"hello "), (6,"world foo")]
         text = "hello world foo"
-        fake_pipeline.set("hello ", [span("PERSON", 0, 5, score=0.9)])     # "hello"
-        fake_pipeline.set("world foo", [span("PERSON", 6, 9, score=0.9)])  # "foo" (idx 6..9 within chunk)
+        fake_pipeline.set("hello ", [span("PERSON", 0, 5, score=0.9)])  # "hello"
+        fake_pipeline.set(
+            "world foo", [span("PERSON", 6, 9, score=0.9)]
+        )  # "foo" (idx 6..9 within chunk)
         f = make_filter(chunk_size=10)
         out = f.detect(text)
         # 2 entities at absolute offsets 0..5 and 12..15
@@ -349,7 +361,9 @@ class TestDetectAdjacencyMerging:
         [e] = f.detect(text)
         assert e.text == "ACME/Globex"
 
-    def test_empty_allowed_disables_gap_merging_for_label(self, make_filter, fake_pipeline):
+    def test_empty_allowed_disables_gap_merging_for_label(
+        self, make_filter, fake_pipeline
+    ):
         # Setting PERSON's allowed set to "" should block "Alice Smith" merging.
         text = "Alice Smith"
         fake_pipeline.set(
@@ -363,7 +377,9 @@ class TestDetectAdjacencyMerging:
         out = f.detect(text)
         assert len(out) == 2
 
-    def test_merge_adjacent_false_disables_all_merging(self, make_filter, fake_pipeline):
+    def test_merge_adjacent_false_disables_all_merging(
+        self, make_filter, fake_pipeline
+    ):
         text = "Alice Smith"
         fake_pipeline.set(
             text,

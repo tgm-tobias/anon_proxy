@@ -49,7 +49,7 @@ def _reconstruct_text_deltas(out: bytes) -> str:
         if not line.startswith("data:"):
             continue
         try:
-            d = json.loads(line[len("data:"):].strip())
+            d = json.loads(line[len("data:") :].strip())
         except json.JSONDecodeError:
             continue
         delta = d.get("delta", {})
@@ -65,7 +65,7 @@ def _reconstruct_partial_json(out: bytes) -> str:
         if not line.startswith("data:"):
             continue
         try:
-            d = json.loads(line[len("data:"):].strip())
+            d = json.loads(line[len("data:") :].strip())
         except json.JSONDecodeError:
             continue
         delta = d.get("delta", {})
@@ -81,7 +81,7 @@ def _reconstruct_openai_content(out: bytes) -> str:
         if not line.startswith("data:") or "[DONE]" in line:
             continue
         try:
-            d = json.loads(line[len("data:"):].strip())
+            d = json.loads(line[len("data:") :].strip())
         except json.JSONDecodeError:
             continue
         choices = d.get("choices", [])
@@ -145,17 +145,29 @@ class TestAnthropicTextDelta:
     async def test_placeholder_in_single_delta_unmasked(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "Hi <PERSON_1>"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Hi <PERSON_1>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = (await _collect(anth.transform_stream(_aiter(chunks), m))).decode()
         assert "Hi Alice" in out
@@ -164,21 +176,37 @@ class TestAnthropicTextDelta:
     async def test_placeholder_split_across_two_deltas(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "Hi <PER"},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "SON_1> there"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Hi <PER"},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "SON_1> there"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = await _collect(anth.transform_stream(_aiter(chunks), m))
         # Reconstruct the client's view: concatenate text from each text_delta.
@@ -191,20 +219,36 @@ class TestAnthropicTextDelta:
     async def test_placeholder_split_char_by_char(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         text = "Hi <PERSON_1> there"
-        chunks = [_sse_event("content_block_start", {
-            "type": "content_block_start", "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        })]
+        chunks = [
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+        ]
         chunks += [
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": ch},
-            })
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": ch},
+                },
+            )
             for ch in text
         ]
-        chunks.append(_sse_event("content_block_stop", {
-            "type": "content_block_stop", "index": 0,
-        }))
+        chunks.append(
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            )
+        )
         out = await _collect(anth.transform_stream(_aiter(chunks), m))
         assert _reconstruct_text_deltas(out) == "Hi Alice there"
 
@@ -217,17 +261,29 @@ class TestAnthropicBufferFlushOnBlockStop:
         match, so it passes through as-is — but no data is lost)."""
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "trailing <inc"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "trailing <inc"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = (await _collect(anth.transform_stream(_aiter(chunks), m))).decode()
         # The held tail "<inc" is flushed verbatim (not a real placeholder).
@@ -236,21 +292,37 @@ class TestAnthropicBufferFlushOnBlockStop:
     async def test_complete_placeholder_at_stop_unmasked(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "hi <PER"},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "SON_1>"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "hi <PER"},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "SON_1>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = await _collect(anth.transform_stream(_aiter(chunks), m))
         assert _reconstruct_text_deltas(out) == "hi Alice"
@@ -266,34 +338,62 @@ class TestAnthropicMultipleBlocks:
         )
         chunks = [
             # Block 0 starts and emits incomplete placeholder
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "<PER"},
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "<PER"},
+                },
+            ),
             # Block 1 starts (independent buffer)
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 1,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 1,
-                "delta": {"type": "text_delta", "text": "<PERSON_2>"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 1,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "text_delta", "text": "<PERSON_2>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 1,
+                },
+            ),
             # Block 0 completes
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "SON_1>"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "SON_1>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = await _collect(anth.transform_stream(_aiter(chunks), m))
         # Per-block reconstruction: index 0 → "Alice", index 1 → "Bob".
@@ -302,12 +402,14 @@ class TestAnthropicMultipleBlocks:
             if not line.startswith("data:"):
                 continue
             try:
-                d = json.loads(line[len("data:"):].strip())
+                d = json.loads(line[len("data:") :].strip())
             except json.JSONDecodeError:
                 continue
             delta = d.get("delta", {})
             if delta.get("type") == "text_delta":
-                per_block[d.get("index")] = per_block.get(d.get("index"), "") + delta.get("text", "")
+                per_block[d.get("index")] = per_block.get(
+                    d.get("index"), ""
+                ) + delta.get("text", "")
         assert per_block.get(0) == "Alice"
         assert per_block.get(1) == "Bob"
         decoded = out.decode()
@@ -321,16 +423,19 @@ class TestAnthropicPassthrough:
         m = _make_masker_with_tokens(make_filter, store)
         chunk = b'event: ping\ndata: {"type": "ping"}\n\n'
         out = await _collect(anth.transform_stream(_aiter([chunk]), m))
-        assert b'event: ping' in out
+        assert b"event: ping" in out
         assert b'"type": "ping"' in out
 
     async def test_unknown_event_passed_through(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store)
-        chunk = _sse_event("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": "end_turn"},
-            "usage": {"output_tokens": 10},
-        })
+        chunk = _sse_event(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 10},
+            },
+        )
         out = (await _collect(anth.transform_stream(_aiter([chunk]), m))).decode()
         assert "message_delta" in out
         assert '"stop_reason": "end_turn"' in out or '"stop_reason":"end_turn"' in out
@@ -352,17 +457,37 @@ class TestAnthropicToolUseJsonDelta:
         # JSON-escaped so the surrounding JSON stays valid when re-parsed.
         m = _make_masker_with_tokens(make_filter, store, ("PATH", r"C:\users"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "tool_use", "id": "x", "name": "t", "input": {}},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": '{"p":"<PATH_1>"}'},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "x",
+                        "name": "t",
+                        "input": {},
+                    },
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": '{"p":"<PATH_1>"}',
+                    },
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = await _collect(anth.transform_stream(_aiter(chunks), m))
         # Reconstruct partial_json fields, parse as JSON, verify the unescaped
@@ -382,17 +507,29 @@ class TestAnthropicLiteralOpenAngleInPII:
     async def test_single_chunk_with_angle_pii_correct(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("NAME", "<unknown>"))
         chunks = [
-            _sse_event("content_block_start", {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }),
-            _sse_event("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": "<NAME_1>"},
-            }),
-            _sse_event("content_block_stop", {
-                "type": "content_block_stop", "index": 0,
-            }),
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "<NAME_1>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
         ]
         out = (await _collect(anth.transform_stream(_aiter(chunks), m))).decode()
         assert "<unknown>" in out
@@ -448,7 +585,7 @@ class TestOpenAIContentDelta:
         for line in out.decode().split("\n"):
             if line.startswith("data:") and "[DONE]" not in line:
                 try:
-                    d = json.loads(line[len("data:"):].strip())
+                    d = json.loads(line[len("data:") :].strip())
                 except json.JSONDecodeError:
                     continue
                 c = d.get("choices", [{}])[0].get("delta", {}).get("content")
@@ -491,7 +628,7 @@ class TestOpenAIContentDelta:
         for line in out.decode().split("\n"):
             if line.startswith("data:") and "[DONE]" not in line:
                 try:
-                    d = json.loads(line[len("data:"):].strip())
+                    d = json.loads(line[len("data:") :].strip())
                 except json.JSONDecodeError:
                     continue
                 c = d.get("choices", [{}])[0].get("delta", {}).get("content")
@@ -506,12 +643,14 @@ class TestOpenAIDocumentedLimitations:
     async def test_only_first_choice_processed(self, make_filter, store):
         m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
         chunks = [
-            _oai_event({
-                "choices": [
-                    {"index": 0, "delta": {"content": "Hi <PERSON_1>"}},
-                    {"index": 1, "delta": {"content": "Hi <PERSON_1>"}},
-                ]
-            }),
+            _oai_event(
+                {
+                    "choices": [
+                        {"index": 0, "delta": {"content": "Hi <PERSON_1>"}},
+                        {"index": 1, "delta": {"content": "Hi <PERSON_1>"}},
+                    ]
+                }
+            ),
             _oai_event("[DONE]"),
         ]
         out = (await _collect(oai.transform_stream(_aiter(chunks), m))).decode()

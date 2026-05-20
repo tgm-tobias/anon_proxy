@@ -12,7 +12,8 @@ from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
 
 _TELEMETRY: contextvars.ContextVar[list | None] = contextvars.ContextVar(
-    "anon_proxy_masker_telemetry", default=None,
+    "anon_proxy_masker_telemetry",
+    default=None,
 )
 
 
@@ -39,7 +40,7 @@ class Detector(Protocol):
 # Patterns for content that should never be masked (non-user PII content)
 _SKIP_MASK_PATTERNS = [
     # Claude Code system-reminder blocks - contain tool definitions, skills list, etc.
-    re.compile(r'^\s*<system-reminder>', re.MULTILINE),
+    re.compile(r"^\s*<system-reminder>", re.MULTILINE),
     # Tool result blocks that are purely structural (e.g., file listings, tool outputs)
     # These can be extended as needed
 ]
@@ -109,11 +110,15 @@ class Masker:
         for pattern in self._skip_patterns:
             if pattern.search(text):
                 if record is not None:
-                    record.append({
-                        "op": "mask", "chars": len(text),
-                        "ms": (time.perf_counter() - t0) * 1000,
-                        "cache_hit": False, "skipped": True,
-                    })
+                    record.append(
+                        {
+                            "op": "mask",
+                            "chars": len(text),
+                            "ms": (time.perf_counter() - t0) * 1000,
+                            "cache_hit": False,
+                            "skipped": True,
+                        }
+                    )
                 return text  # Skip masking entirely
 
         # Check cache
@@ -121,11 +126,14 @@ class Masker:
         if cached := self._cache.get(content_hash):
             self._cache.move_to_end(content_hash)
             if record is not None:
-                record.append({
-                    "op": "mask", "chars": len(text),
-                    "ms": (time.perf_counter() - t0) * 1000,
-                    "cache_hit": True,
-                })
+                record.append(
+                    {
+                        "op": "mask",
+                        "chars": len(text),
+                        "ms": (time.perf_counter() - t0) * 1000,
+                        "cache_hit": True,
+                    }
+                )
             return cached[1]
 
         # Pass 1: regex detectors first. Substitute matches inline so the ML
@@ -142,11 +150,13 @@ class Masker:
         # that intersects a placeholder token; substituting inside one would
         # corrupt the token and break unmask.
         ml_entities = _drop_placeholder_overlaps(
-            self._filter.detect(intermediate), intermediate,
+            self._filter.detect(intermediate),
+            intermediate,
         )
         if self._ignore_labels:
             ml_entities = [
-                e for e in ml_entities
+                e
+                for e in ml_entities
                 if normalize_label(e.label) not in self._ignore_labels
             ]
         ml_entities = _resolve_overlaps(ml_entities)
@@ -154,14 +164,19 @@ class Masker:
 
         self._cache_result(content_hash, regex_entities + ml_entities, masked)
         if record is not None:
-            record.append({
-                "op": "mask", "chars": len(text),
-                "ms": (time.perf_counter() - t0) * 1000,
-                "cache_hit": False,
-            })
+            record.append(
+                {
+                    "op": "mask",
+                    "chars": len(text),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                    "cache_hit": False,
+                }
+            )
         return masked
 
-    def _cache_result(self, content_hash: str, entities: list[PIIEntity], masked: str) -> None:
+    def _cache_result(
+        self, content_hash: str, entities: list[PIIEntity], masked: str
+    ) -> None:
         """Cache a detection result with LRU eviction."""
         self._cache[content_hash] = (entities, masked)
         self._cache.move_to_end(content_hash)
@@ -206,11 +221,13 @@ class Masker:
             self._block_cache.move_to_end(key)
             cached = self._block_cache[key]
             if record is not None:
-                record.append({
-                    "op": "mask_obj",
-                    "ms": (time.perf_counter() - t0) * 1000,
-                    "cache_hit": True,
-                })
+                record.append(
+                    {
+                        "op": "mask_obj",
+                        "ms": (time.perf_counter() - t0) * 1000,
+                        "cache_hit": True,
+                    }
+                )
             return cached
         result = walker(obj)
         self._block_cache[key] = result
@@ -218,11 +235,13 @@ class Masker:
         while len(self._block_cache) > self._cache_size:
             self._block_cache.popitem(last=False)
         if record is not None:
-            record.append({
-                "op": "mask_obj",
-                "ms": (time.perf_counter() - t0) * 1000,
-                "cache_hit": False,
-            })
+            record.append(
+                {
+                    "op": "mask_obj",
+                    "ms": (time.perf_counter() - t0) * 1000,
+                    "cache_hit": False,
+                }
+            )
         return result
 
     def unmask(self, text: str) -> str:
@@ -230,10 +249,13 @@ class Masker:
         t0 = time.perf_counter() if record is not None else 0.0
         result = self._sub(text, lambda s: s)
         if record is not None:
-            record.append({
-                "op": "unmask", "chars": len(text),
-                "ms": (time.perf_counter() - t0) * 1000,
-            })
+            record.append(
+                {
+                    "op": "unmask",
+                    "chars": len(text),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+            )
         return result
 
     def unmask_json(self, text: str) -> str:
@@ -248,10 +270,13 @@ class Masker:
         t0 = time.perf_counter() if record is not None else 0.0
         result = self._sub(text, lambda s: json.dumps(s)[1:-1])
         if record is not None:
-            record.append({
-                "op": "unmask_json", "chars": len(text),
-                "ms": (time.perf_counter() - t0) * 1000,
-            })
+            record.append(
+                {
+                    "op": "unmask_json",
+                    "chars": len(text),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+            )
         return result
 
     def _sub(self, text: str, transform: Callable[[str], str]) -> str:
@@ -281,7 +306,8 @@ def _drop_placeholder_overlaps(entities: list[PIIEntity], text: str) -> list[PII
     if not placeholders:
         return list(entities)
     return [
-        e for e in entities
+        e
+        for e in entities
         if not any(e.start < pe and e.end > ps for ps, pe in placeholders)
     ]
 

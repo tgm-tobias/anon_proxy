@@ -129,7 +129,7 @@ def main() -> int:
         "--no-mask",
         action="store_true",
         help="Skip local masking/unmasking; send raw text and display raw replies. "
-             "Pair with *_BASE_URL to test the proxy's own masking.",
+        "Pair with *_BASE_URL to test the proxy's own masking.",
     )
     parser.add_argument(
         "--config",
@@ -189,7 +189,9 @@ def main() -> int:
                 chunk_size=args.chunk_size,
             )
         masker = Masker(
-            filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels,
+            filter=pf,
+            extra_detectors=extra_detectors,
+            ignore_labels=cfg.ignore_labels,
         )
 
     # Create client based on provider
@@ -254,9 +256,7 @@ def main() -> int:
                 )
                 history.append({"role": "assistant", "content": assistant_text})
                 if usage:
-                    usage_str = (
-                        f"  {DIM}usage: in={usage.prompt_tokens} out={usage.completion_tokens}{RESET}"
-                    )
+                    usage_str = f"  {DIM}usage: in={usage.prompt_tokens} out={usage.completion_tokens}{RESET}"
                 else:
                     usage_str = f"  {DIM}(usage unavailable){RESET}"
         except KeyboardInterrupt:
@@ -281,7 +281,9 @@ def main() -> int:
         turn += 1
 
 
-def await_anthropic_stream(client, model: str, max_tokens: int, history: list[dict]) -> tuple[str, any]:
+def await_anthropic_stream(
+    client, model: str, max_tokens: int, history: list[dict]
+) -> tuple[str, any]:
     """Stream Anthropic API response."""
     with client.messages.stream(
         model=model,
@@ -298,7 +300,9 @@ def await_anthropic_stream(client, model: str, max_tokens: int, history: list[di
     return "".join(b.text for b in final.content if b.type == "text"), final
 
 
-def await_openai_stream(client, model: str, max_tokens: int, history: list[dict]) -> tuple[str, any]:
+def await_openai_stream(
+    client, model: str, max_tokens: int, history: list[dict]
+) -> tuple[str, any]:
     """Stream OpenAI API response."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
     stream = client.chat.completions.create(

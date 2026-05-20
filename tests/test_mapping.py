@@ -139,7 +139,9 @@ class TestLabelNormalizationInStore:
         e = store.get_or_create("EMAIL", "a@b.com")
         assert (p.index, e.index) == (1, 1)
 
-    def test_same_value_under_different_labels_get_independent_placeholders(self, store):
+    def test_same_value_under_different_labels_get_independent_placeholders(
+        self, store
+    ):
         # Edge case: "alice" tagged as both PERSON and ORG.
         p = store.get_or_create("PERSON", "alice")
         o = store.get_or_create("ORGANIZATION", "alice")

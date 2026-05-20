@@ -38,7 +38,9 @@ def print_analysis(text: str, entities: Sequence[PIIEntity]) -> None:
         return
     print()
     for e in entities:
-        print(f"  {e.label:<12} {e.text!r:<30} score={e.score:.3f}  offset={e.start}-{e.end}")
+        print(
+            f"  {e.label:<12} {e.text!r:<30} score={e.score:.3f}  offset={e.start}-{e.end}"
+        )
 
 
 def _json_default(o):
@@ -93,15 +95,15 @@ def main() -> int:
         default=[],
         metavar="LABEL=CHARS",
         help="Override the per-label merge-gap policy for one label. Repeatable. "
-             "Whitespace is NOT implicit — include it in CHARS if you want it. "
-             "Examples: --merge-gap PERSON=\" -'.\" --merge-gap ADDRESS=,.#",
+        "Whitespace is NOT implicit — include it in CHARS if you want it. "
+        'Examples: --merge-gap PERSON=" -\'." --merge-gap ADDRESS=,.#',
     )
     parser.add_argument(
         "--config",
         default=None,
         metavar="PATH",
         help="Path to config.json; the merge_gap section is loaded first, then "
-             "individual --merge-gap flags override matching labels.",
+        "individual --merge-gap flags override matching labels.",
     )
     parser.add_argument(
         "--raw",
@@ -114,7 +116,7 @@ def main() -> int:
         default=1500,
         metavar="N",
         help="Max characters per chunk fed to the model (default: 1500). "
-             "Lower values reduce peak GPU memory at the cost of more passes.",
+        "Lower values reduce peak GPU memory at the cost of more passes.",
     )
     parser.add_argument(
         "--device",

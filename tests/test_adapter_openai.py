@@ -80,7 +80,10 @@ class TestMaskRequestArrayContent:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "Hi Alice"},
-                        {"type": "image_url", "image_url": {"url": "https://x/Alice.png"}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://x/Alice.png"},
+                        },
                     ],
                 }
             ]
@@ -88,7 +91,10 @@ class TestMaskRequestArrayContent:
         out = oai.mask_request(body, masker)
         assert out["messages"][0]["content"][0]["text"] == "Hi <PERSON_1>"
         # Image url unchanged.
-        assert out["messages"][0]["content"][1]["image_url"]["url"] == "https://x/Alice.png"
+        assert (
+            out["messages"][0]["content"][1]["image_url"]["url"]
+            == "https://x/Alice.png"
+        )
 
 
 class TestMaskRequestToolCalls:
@@ -125,7 +131,10 @@ class TestMaskRequestToolCalls:
                         {
                             "id": "x",
                             "type": "function",
-                            "function": {"name": "send", "arguments": "not json: Alice"},
+                            "function": {
+                                "name": "send",
+                                "arguments": "not json: Alice",
+                            },
                         }
                     ],
                 }
@@ -189,7 +198,10 @@ class TestMaskRequestTools:
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "to": {"type": "string", "description": "name like Alice"}
+                                "to": {
+                                    "type": "string",
+                                    "description": "name like Alice",
+                                }
                             },
                         },
                     },
@@ -198,7 +210,9 @@ class TestMaskRequestTools:
             "messages": [{"role": "user", "content": "hi"}],
         }
         out = oai.mask_request(body, masker)
-        desc = out["tools"][0]["function"]["parameters"]["properties"]["to"]["description"]
+        desc = out["tools"][0]["function"]["parameters"]["properties"]["to"][
+            "description"
+        ]
         assert desc == "name like <PERSON_1>"
 
 
@@ -275,7 +289,9 @@ class TestUnmaskResponseToolCalls:
             ]
         }
         out = oai.unmask_response(body, masker)
-        args = json.loads(out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+        args = json.loads(
+            out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        )
         assert args == {"to": "Alice"}
 
     def test_arguments_invalid_json_unmasked_as_raw_string(self, masker, store):

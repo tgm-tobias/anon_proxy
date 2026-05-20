@@ -58,10 +58,19 @@ def _trunc(s: str, n: int = 100) -> str:
     return repr(s if len(s) <= n else s[:n] + "…")
 
 
-def _log_request(provider: str, path: str, incoming: dict, masked: dict, new_store_entries: list[tuple[str, str]]) -> None:
+def _log_request(
+    provider: str,
+    path: str,
+    incoming: dict,
+    masked: dict,
+    new_store_entries: list[tuple[str, str]],
+) -> None:
     model = incoming.get("model", "?")
     n_msg = len(incoming.get("messages", []))
-    print(f"\n{_DIM}==== {provider} {path} | model={model} | {n_msg} msg ===={_RESET}", file=sys.stderr)
+    print(
+        f"\n{_DIM}==== {provider} {path} | model={model} | {n_msg} msg ===={_RESET}",
+        file=sys.stderr,
+    )
     if new_store_entries:
         print(f"{_DIM}[store +{len(new_store_entries)}]{_RESET}", file=sys.stderr)
         for token, original in new_store_entries:
@@ -95,7 +104,9 @@ def _diff_content(before: dict, after: dict) -> list[str]:
                     continue
                 btype = bb.get("type", "?")
                 if btype == "text":
-                    lines.append(f"  {role}[{j}] text: {_trunc(bb.get('text',''))} → {_trunc(ba.get('text',''))}")
+                    lines.append(
+                        f"  {role}[{j}] text: {_trunc(bb.get('text', ''))} → {_trunc(ba.get('text', ''))}"
+                    )
                 elif btype == "tool_use" or btype == "tool":
                     bi = json.dumps(bb.get("input", {}), ensure_ascii=False)
                     ai = json.dumps(ba.get("input", {}), ensure_ascii=False)
@@ -130,7 +141,9 @@ def _log_response(upstream: dict, unmasked: dict) -> None:
                 continue
             btype = bb.get("type", "?")
             if btype == "text":
-                lines.append(f"  text[{i}]: {_trunc(bb.get('text',''))} → {_trunc(ba.get('text',''))}")
+                lines.append(
+                    f"  text[{i}]: {_trunc(bb.get('text', ''))} → {_trunc(ba.get('text', ''))}"
+                )
             elif btype == "tool_use":
                 bi = json.dumps(bb.get("input", {}), ensure_ascii=False)
                 ai = json.dumps(ba.get("input", {}), ensure_ascii=False)
@@ -142,8 +155,12 @@ def _log_response(upstream: dict, unmasked: dict) -> None:
         for choice in choices:
             msg = choice.get("message", {})
             content = msg.get("content", "")
-            if isinstance(content, str) and content != unmasked.get("choices", [{}])[0].get("message", {}).get("content", ""):
-                lines.append(f"  content: {_trunc(content)} → {_trunc(unmasked['choices'][0]['message']['content'])}")
+            if isinstance(content, str) and content != unmasked.get("choices", [{}])[
+                0
+            ].get("message", {}).get("content", ""):
+                lines.append(
+                    f"  content: {_trunc(content)} → {_trunc(unmasked['choices'][0]['message']['content'])}"
+                )
 
     if lines:
         print(f"{_GREEN}[unmasked response]{_RESET}", file=sys.stderr)
@@ -160,8 +177,8 @@ def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
     print(f"{_GREEN}[unmasked stream]{_RESET}", file=sys.stderr)
     for masked, unmasked in substitutions.items():
         # Escape backslashes and newlines for display
-        masked_display = masked.replace('\\', '\\\\').replace('\n', '\\n')
-        unmasked_display = unmasked.replace('\\', '\\\\').replace('\n', '\\n')
+        masked_display = masked.replace("\\", "\\\\").replace("\n", "\\n")
+        unmasked_display = unmasked.replace("\\", "\\\\").replace("\n", "\\n")
         print(f"  {masked_display}", file=sys.stderr)
         print(f"  →", file=sys.stderr)
         print(f"  {unmasked_display}", file=sys.stderr)
@@ -241,7 +258,9 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(600.0, connect=10.0)
+        ) as client:
             app.state.client = client
             app.state.masker = masker
             app.state.debug = debug
@@ -261,11 +280,14 @@ def build_app(
         if not path_parts or not path_parts[0]:
             # Root path - return provider list
             return Response(
-                content=json.dumps({
-                    "providers": list(all_upstreams.keys()),
-                    "usage": f"Use /{{provider}}/{{path}} to route to a provider. "
-                           f"Available providers: {', '.join(sorted(all_upstreams.keys()))}"
-                }, indent=2),
+                content=json.dumps(
+                    {
+                        "providers": list(all_upstreams.keys()),
+                        "usage": f"Use /{{provider}}/{{path}} to route to a provider. "
+                        f"Available providers: {', '.join(sorted(all_upstreams.keys()))}",
+                    },
+                    indent=2,
+                ),
                 media_type="application/json",
             )
 
@@ -286,7 +308,11 @@ def build_app(
         adapter = _ADAPTERS.get(upstream_config.adapter)
         if adapter is None:
             return Response(
-                content=json.dumps({"error": f"No adapter for provider type: {upstream_config.adapter}"}),
+                content=json.dumps(
+                    {
+                        "error": f"No adapter for provider type: {upstream_config.adapter}"
+                    }
+                ),
                 status_code=500,
                 media_type="application/json",
             )
@@ -322,7 +348,10 @@ async def _handle_proxy(
     api_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
 
     # Build upstream URL
-    upstream_url = urljoin(upstream_config.base_url.rstrip("/") + "/", upstream_config.path_prefix.strip("/"))
+    upstream_url = urljoin(
+        upstream_config.base_url.rstrip("/") + "/",
+        upstream_config.path_prefix.strip("/"),
+    )
     upstream_url = urljoin(upstream_url.rstrip("/") + "/", api_path.lstrip("/"))
 
     # For non-POST/PUT/DELETE requests with no body, just proxy through
@@ -332,7 +361,9 @@ async def _handle_proxy(
     raw_body = await request.body()
 
     # For requests with no body or non-JSON, just proxy
-    if not raw_body or request.headers.get("content-type", "").startswith("multipart/form-data"):
+    if not raw_body or request.headers.get("content-type", "").startswith(
+        "multipart/form-data"
+    ):
         return await _passthrough(request, upstream_url, body_override=raw_body)
 
     try:
@@ -394,19 +425,28 @@ async def _handle_proxy(
         async def body_iter():
             # For streaming, track substitutions for debug logging
             substitutions: dict[str, str] = {}
+
             def track_substitution(upstream: str, client: str):
                 """Track placeholder → unmasked substitutions."""
                 if upstream != client and upstream.startswith("<"):
                     substitutions[upstream] = substitutions.get(upstream, client)
 
             upstream_byte_acc: list[bytes] | None = [] if capture is not None else None
-            downstream_byte_acc: list[bytes] | None = [] if capture is not None else None
+            downstream_byte_acc: list[bytes] | None = (
+                [] if capture is not None else None
+            )
             stream_calls: list = []
-            scope = telemetry_scope() if capture is not None else contextlib.nullcontext(None)
+            scope = (
+                telemetry_scope()
+                if capture is not None
+                else contextlib.nullcontext(None)
+            )
             try:
                 with scope as calls:
                     async for out in adapter.transform_stream(
-                        _timed_aiter(upstream_resp.aiter_bytes(), upstream_acc, upstream_byte_acc),
+                        _timed_aiter(
+                            upstream_resp.aiter_bytes(), upstream_acc, upstream_byte_acc
+                        ),
                         masker,
                         on_substitution=track_substitution if debug else None,
                     ):
@@ -419,30 +459,40 @@ async def _handle_proxy(
                 if debug:
                     _log_stream_substitutions(substitutions)
                 if metrics:
-                    _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
+                    _log_metrics(
+                        upstream_config.name,
+                        time.perf_counter() - t_start,
+                        upstream_acc[0],
+                    )
                 if capture is not None:
                     e2e_s = time.perf_counter() - t_start
                     transform_ms = max(
                         (e2e_s - upstream_acc[0]) * 1000 - (mask_request_ms or 0.0), 0.0
                     )
-                    await capture.write({
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "provider": upstream_config.name,
-                        "path": api_path,
-                        "streaming": True,
-                        "request": {"pre_mask": body, "post_mask": masked},
-                        "response": {
-                            "pre_unmask": b"".join(upstream_byte_acc or []).decode("utf-8", "replace"),
-                            "post_unmask": b"".join(downstream_byte_acc or []).decode("utf-8", "replace"),
-                        },
-                        "timing_ms": {
-                            "e2e": e2e_s * 1000,
-                            "upstream": upstream_acc[0] * 1000,
-                            "mask_request": mask_request_ms,
-                            "stream_transform": transform_ms,
-                            "detector_calls": mask_calls + stream_calls,
-                        },
-                    })
+                    await capture.write(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "provider": upstream_config.name,
+                            "path": api_path,
+                            "streaming": True,
+                            "request": {"pre_mask": body, "post_mask": masked},
+                            "response": {
+                                "pre_unmask": b"".join(upstream_byte_acc or []).decode(
+                                    "utf-8", "replace"
+                                ),
+                                "post_unmask": b"".join(
+                                    downstream_byte_acc or []
+                                ).decode("utf-8", "replace"),
+                            },
+                            "timing_ms": {
+                                "e2e": e2e_s * 1000,
+                                "upstream": upstream_acc[0] * 1000,
+                                "mask_request": mask_request_ms,
+                                "stream_transform": transform_ms,
+                                "detector_calls": mask_calls + stream_calls,
+                            },
+                        }
+                    )
                 await upstream_resp.aclose()
 
         return StreamingResponse(
@@ -482,24 +532,28 @@ async def _handle_proxy(
             if debug:
                 _log_response(resp_json, unmasked)
             if metrics:
-                _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
+                _log_metrics(
+                    upstream_config.name, time.perf_counter() - t_start, upstream_acc[0]
+                )
             if capture is not None:
                 e2e_s = time.perf_counter() - t_start
-                await capture.write({
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "provider": upstream_config.name,
-                    "path": api_path,
-                    "streaming": False,
-                    "request": {"pre_mask": body, "post_mask": masked},
-                    "response": {"pre_unmask": resp_json, "post_unmask": unmasked},
-                    "timing_ms": {
-                        "e2e": e2e_s * 1000,
-                        "upstream": upstream_acc[0] * 1000,
-                        "mask_request": mask_request_ms,
-                        "unmask_response": unmask_response_ms,
-                        "detector_calls": mask_calls + unmask_calls,
-                    },
-                })
+                await capture.write(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "provider": upstream_config.name,
+                        "path": api_path,
+                        "streaming": False,
+                        "request": {"pre_mask": body, "post_mask": masked},
+                        "response": {"pre_unmask": resp_json, "post_unmask": unmasked},
+                        "timing_ms": {
+                            "e2e": e2e_s * 1000,
+                            "upstream": upstream_acc[0] * 1000,
+                            "mask_request": mask_request_ms,
+                            "unmask_response": unmask_response_ms,
+                            "detector_calls": mask_calls + unmask_calls,
+                        },
+                    }
+                )
             return Response(
                 content=json.dumps(unmasked),
                 status_code=upstream_resp.status_code,
@@ -508,7 +562,9 @@ async def _handle_proxy(
             )
 
     if metrics:
-        _log_metrics(upstream_config.name, time.perf_counter() - t_start, upstream_acc[0])
+        _log_metrics(
+            upstream_config.name, time.perf_counter() - t_start, upstream_acc[0]
+        )
     return Response(
         content=upstream_resp.content,
         status_code=upstream_resp.status_code,
@@ -538,7 +594,9 @@ def _get_streaming_flag(body: dict) -> bool:
     return body.get("stream", False)
 
 
-async def _passthrough(request: Request, upstream_url: str, *, body_override: bytes | None = None) -> Response:
+async def _passthrough(
+    request: Request, upstream_url: str, *, body_override: bytes | None = None
+) -> Response:
     """Pass through request without masking."""
     client: httpx.AsyncClient = request.app.state.client
     body = body_override if body_override is not None else await request.body()
@@ -610,9 +668,15 @@ def main() -> None:
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="anon-proxy — PII masking proxy for LLM APIs")
-    parser.add_argument("--host", default=os.environ.get("ANON_PROXY_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("ANON_PROXY_PORT", "8080")))
+    parser = argparse.ArgumentParser(
+        description="anon-proxy — PII masking proxy for LLM APIs"
+    )
+    parser.add_argument(
+        "--host", default=os.environ.get("ANON_PROXY_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("ANON_PROXY_PORT", "8080"))
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -622,7 +686,8 @@ def main() -> None:
     parser.add_argument(
         "--metrics",
         action="store_true",
-        default=os.environ.get("ANON_PROXY_METRICS", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("ANON_PROXY_METRICS", "").lower()
+        in ("1", "true", "yes"),
         help="Log per-turn latency breakdown (e2e, upstream, proxy) to stderr.",
     )
     parser.add_argument(
@@ -630,16 +695,16 @@ def main() -> None:
         default=os.environ.get("ANON_PROXY_CAPTURE"),
         metavar="PATH",
         help="Append per-turn JSON records (request/response, both pre- and post-mask, "
-             "plus timing breakdown) to PATH. WARNING: contains UNMASKED PII.",
+        "plus timing breakdown) to PATH. WARNING: contains UNMASKED PII.",
     )
     parser.add_argument(
         "--config",
         default=os.environ.get("ANON_PROXY_CONFIG"),
         metavar="PATH",
         help="Path to config.json with optional keys: patterns (label -> regex), "
-             "merge_gap (label -> chars overriding DEFAULT_MERGE_GAP_ALLOWED), "
-             "ignore_labels (list of labels to skip masking on ML detections). "
-             "See README.",
+        "merge_gap (label -> chars overriding DEFAULT_MERGE_GAP_ALLOWED), "
+        "ignore_labels (list of labels to skip masking on ML detections). "
+        "See README.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -647,7 +712,7 @@ def main() -> None:
         default=int(os.environ.get("ANON_PROXY_CHUNK_SIZE", "1500")),
         metavar="N",
         help="Max characters per chunk fed to the model (default: 1500). "
-             "Lower values reduce peak GPU memory at the cost of more forward passes.",
+        "Lower values reduce peak GPU memory at the cost of more forward passes.",
     )
     parser.add_argument(
         "--backend",
@@ -666,7 +731,7 @@ def main() -> None:
         default=[],
         metavar="NAME=URL[;adapter=anthropic|openai][;path_prefix=/PATH]",
         help="Add an extra upstream provider. Repeatable. "
-             "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
+        "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
     )
     args = parser.parse_args()
 
@@ -707,7 +772,9 @@ def main() -> None:
         )
 
     masker = (
-        Masker(filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels)
+        Masker(
+            filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels
+        )
         if (pf is not None or extra_detectors or cfg.ignore_labels)
         else None
     )
