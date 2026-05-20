@@ -202,9 +202,9 @@ class Masker:
             return walker(obj)
         record = _TELEMETRY.get()
         t0 = time.perf_counter() if record is not None else 0.0
-        cached = self._block_cache.get(key)
-        if cached is not None:
+        if key in self._block_cache:
             self._block_cache.move_to_end(key)
+            cached = self._block_cache[key]
             if record is not None:
                 record.append({
                     "op": "mask_obj",

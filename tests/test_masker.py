@@ -695,3 +695,128 @@ class TestUnmaskJson:
     def test_empty_input_returns_empty(self, make_filter, store):
         m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
         assert m.unmask_json("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 3f: mask_obj walker.
+#
+# mask_obj wraps a caller-provided walker with content-hash caching. It does
+# NOT walk the tree itself. The cache key is a JSON serialization of `obj`
+# (insertion-order-sensitive — no sort_keys). On a non-JSON-serializable obj,
+# hashing fails and walker is called directly with no caching. Walker
+# exceptions propagate (and are not cached).
+# ---------------------------------------------------------------------------
+
+
+def _make_walker_recorder():
+    """Returns (walker, calls) where walker tags its input and appends to calls."""
+    calls: list = []
+
+    def walker(obj):
+        calls.append(obj)
+        if isinstance(obj, dict):
+            return {**obj, "_walked": True}
+        return obj
+
+    return walker, calls
+
+
+class TestMaskObjCacheBehavior:
+    def test_first_call_invokes_walker(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+        out = m.mask_obj({"a": 1}, walker)
+        assert out == {"a": 1, "_walked": True}
+        assert calls == [{"a": 1}]
+
+    def test_identical_call_is_cache_hit(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+        m.mask_obj({"a": 1}, walker)
+        out = m.mask_obj({"a": 1}, walker)
+        assert out == {"a": 1, "_walked": True}
+        # Walker called only once.
+        assert len(calls) == 1
+
+    def test_different_content_is_cache_miss(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+        m.mask_obj({"a": 1}, walker)
+        m.mask_obj({"a": 2}, walker)
+        assert len(calls) == 2
+
+    def test_cache_returns_same_object_identity(self, make_masker):
+        m = make_masker()
+        walker, _ = _make_walker_recorder()
+        a = m.mask_obj({"x": 1}, walker)
+        b = m.mask_obj({"x": 1}, walker)
+        assert a is b  # contract: cached object is shared — do not mutate
+
+
+class TestMaskObjInsertionOrderSensitive:
+    def test_key_order_changes_cache_identity(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+        # Same content, different insertion order → different hash → walker
+        # is called for each.
+        m.mask_obj({"a": 1, "b": 2}, walker)
+        m.mask_obj({"b": 2, "a": 1}, walker)
+        assert len(calls) == 2
+
+
+class TestMaskObjUnserializable:
+    def test_unserializable_obj_skips_cache(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+
+        class Opaque:
+            pass
+
+        obj = Opaque()
+        # First call: hash fails → walker called.
+        m.mask_obj(obj, walker)
+        # Second identical call: hash still fails → walker called again, no caching.
+        m.mask_obj(obj, walker)
+        assert calls == [obj, obj]
+
+
+class TestMaskObjWalkerException:
+    def test_walker_exception_propagates_and_is_not_cached(self, make_masker):
+        import pytest as _pytest
+
+        m = make_masker()
+        attempts: list = []
+
+        def flaky_walker(obj):
+            attempts.append(obj)
+            raise RuntimeError("boom")
+
+        with _pytest.raises(RuntimeError, match="boom"):
+            m.mask_obj({"a": 1}, flaky_walker)
+        # Second attempt with the same input must re-invoke walker (no exception caching).
+        with _pytest.raises(RuntimeError, match="boom"):
+            m.mask_obj({"a": 1}, flaky_walker)
+        assert len(attempts) == 2
+
+
+class TestMaskObjNone:
+    def test_none_caches_normally(self, make_masker):
+        m = make_masker()
+        walker, calls = _make_walker_recorder()
+        m.mask_obj(None, walker)
+        m.mask_obj(None, walker)
+        # `None` serializes to JSON 'null'; second call should hit cache.
+        assert calls == [None]
+
+
+class TestMaskObjLruEviction:
+    def test_cache_evicts_when_over_size(self, make_masker):
+        # Tiny cache to exercise eviction.
+        m = make_masker(cache_size=2)
+        walker, calls = _make_walker_recorder()
+        m.mask_obj({"i": 0}, walker)
+        m.mask_obj({"i": 1}, walker)
+        m.mask_obj({"i": 2}, walker)  # evicts {"i": 0}
+        # Re-fetching {"i": 0} re-invokes walker (was evicted).
+        m.mask_obj({"i": 0}, walker)
+        assert len(calls) == 4
