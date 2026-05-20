@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Callable
 
+from anon_proxy.adapters._streaming import split_at_last_open
 from anon_proxy.masker import Masker
 
 
@@ -278,10 +279,5 @@ def _unmask_for(masker: Masker, text: str, escape: bool) -> str:
     return masker.unmask_json(text) if escape else masker.unmask(text)
 
 
-def _split_emit(buf: str) -> tuple[str, str]:
-    """Split into (emittable, remainder). Remainder is anything from the last
-    unterminated '<' onward — a potentially-incomplete placeholder token."""
-    last_open = buf.rfind("<")
-    if last_open == -1 or ">" in buf[last_open:]:
-        return buf, ""
-    return buf[:last_open], buf[last_open:]
+# Backwards-compatible re-export for callers/tests referencing the old name.
+_split_emit = split_at_last_open

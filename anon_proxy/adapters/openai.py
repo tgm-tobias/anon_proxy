@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Callable
 
+from anon_proxy.adapters._streaming import split_at_last_open
 from anon_proxy.masker import Masker
 
 
@@ -327,33 +328,23 @@ def _transform_event(
         if not isinstance(delta, dict):
             continue
 
-        # Handle content delta
+        # Handle content delta — unified flush rule with Anthropic:
+        # emit everything up to the last unterminated '<' (a potentially
+        # incomplete placeholder); hold the rest in `content_buffer` until
+        # the next chunk completes it. No size cap — placeholders are
+        # bounded by label length plus `_<digits>`.
         content = delta.get("content")
         if isinstance(content, str):
-            # Add to buffer
             content_buffer[0] += content
-            buffered = content_buffer[0]
-            unmasked = masker.unmask(buffered)
-
-            # Only emit if unmasking succeeded completely (no placeholders left)
-            # OR buffer is very long (fallback to avoid memory issues)
-            should_emit = False
-            if unmasked != buffered and "<" not in unmasked:
-                # Unmasking succeeded - no placeholders left
-                should_emit = True
-            elif len(buffered) > 500:
-                # Buffer is getting too long, emit anyway (fallback)
-                should_emit = True
-
-            if should_emit:
-                if on_substitution and buffered != unmasked:
-                    on_substitution(buffered, unmasked)
+            emittable, remainder = split_at_last_open(content_buffer[0])
+            content_buffer[0] = remainder
+            if emittable:
+                unmasked = masker.unmask(emittable)
+                if on_substitution and emittable != unmasked:
+                    on_substitution(emittable, unmasked)
                 choice["delta"]["content"] = unmasked
-                content_buffer[0] = ""
                 yield event_type, json.dumps(data)
-            else:
-                # Don't emit yet - keep buffering
-                pass
+            # else: nothing safe to emit yet; suppress this delta event.
             transformed = True
             break
 
