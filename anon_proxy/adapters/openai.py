@@ -28,7 +28,12 @@ def mask_request(body: dict, masker: Masker) -> dict:
     result = dict(body)
     messages = body.get("messages")
     if isinstance(messages, list):
-        result["messages"] = [_mask_message(m, masker) for m in messages]
+        # Each message goes through mask_obj so identical earlier messages in
+        # conversation history skip the recursive walk entirely (matches the
+        # Anthropic adapter).
+        result["messages"] = [
+            masker.mask_obj(m, lambda mm: _mask_message(mm, masker)) for m in messages
+        ]
 
     # Mask tool definitions
     tools = body.get("tools")
@@ -106,14 +111,16 @@ def _mask_tool_call(tool_call: dict, masker: Masker) -> dict:
 
 
 def _mask_tool(tool: dict, masker: Masker) -> dict:
-    """Mask a tool definition (function parameters)."""
+    """Mask a tool definition (function parameters only).
+
+    `description` is static schema authored alongside the tool — not user data —
+    and is intentionally left untouched. `parameters` is still walked because
+    some apps embed user-supplied examples there.
+    """
     result = dict(tool)
     function = tool.get("function", {})
     if isinstance(function, dict):
-        # Mask function description and parameter properties
         masked_func = dict(function)
-        if isinstance(function.get("description"), str):
-            masked_func["description"] = masker.mask(function["description"])
         if isinstance(function.get("parameters"), dict):
             masked_func["parameters"] = _walk_strings(function["parameters"], masker.mask)
         result["function"] = masked_func
