@@ -820,3 +820,93 @@ class TestMaskObjLruEviction:
         # Re-fetching {"i": 0} re-invokes walker (was evicted).
         m.mask_obj({"i": 0}, walker)
         assert len(calls) == 4
+
+
+# ---------------------------------------------------------------------------
+# Phase 3g: content-hash cache redesign.
+#
+# Two caches in play:
+#   - `_cache` keyed on text via _hash_content; value is (entities, masked).
+#   - `_block_cache` keyed on JSON dump via _hash_obj; value is the walker's
+#     returned object.
+#
+# Both truncate SHA-256 to 16 hex chars (64 bits) — one policy. Cache lifetime
+# is per-Masker; the docstring spells out "one Masker per conversation".
+# ---------------------------------------------------------------------------
+
+
+class TestHashLengthsUnified:
+    def test_content_hash_is_16_hex_chars(self):
+        from anon_proxy.masker import _hash_content
+
+        h = _hash_content("anything")
+        assert len(h) == 16
+        assert all(c in "0123456789abcdef" for c in h)
+
+    def test_obj_hash_is_16_hex_chars(self):
+        from anon_proxy.masker import _hash_obj
+
+        h = _hash_obj({"a": 1})
+        assert len(h) == 16
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+class TestMaskCacheHit:
+    def test_identical_text_does_not_invoke_pipeline_twice(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker()
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        a = m.mask(text)
+        b = m.mask(text)
+        assert a == b
+        # Pipeline only called on the first mask; second is a cache hit.
+        assert fake_pipeline.calls == [text]
+
+    def test_different_text_invokes_pipeline_each_time(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker()
+        fake_pipeline.set("one", [])
+        fake_pipeline.set("two", [])
+        m.mask("one")
+        m.mask("two")
+        assert fake_pipeline.calls == ["one", "two"]
+
+
+class TestMaskCacheLruEviction:
+    def test_evicts_least_recently_used(self, make_masker, fake_pipeline):
+        m = make_masker(cache_size=2)
+        for t in ("a", "b", "c"):
+            fake_pipeline.set(t, [])
+            m.mask(t)
+        # 'a' was evicted when 'c' was inserted; re-masking 'a' calls pipeline.
+        m.mask("a")
+        # Counts: a, b, c, then a again → 4
+        assert fake_pipeline.calls == ["a", "b", "c", "a"]
+
+
+class TestPerMaskerContract:
+    """Per-Masker contract: caches live as long as the Masker instance. The
+    docstring declares 'one Masker per conversation' — pin the contract so
+    a future caller doesn't share a Masker across conversations with fresh
+    PIIStores."""
+
+    def test_caches_are_isolated_between_masker_instances(
+        self, make_masker, fake_pipeline
+    ):
+        m1 = make_masker()
+        m2 = make_masker()
+        text = "Hello Alice"
+        fake_pipeline.set(text, [span("PERSON", 6, 11, score=0.9)])
+        m1.mask(text)
+        m2.mask(text)
+        # Each Masker called the pipeline independently — caches do not leak.
+        assert fake_pipeline.calls == [text, text]
+
+    def test_docstring_documents_per_masker_lifetime(self):
+        # Pin via the docstring so a future refactor doesn't silently relax it.
+        from anon_proxy.masker import Masker
+
+        assert "conversation" in (Masker.__doc__ or "").lower()

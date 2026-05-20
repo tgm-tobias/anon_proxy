@@ -315,13 +315,19 @@ def _resolve_overlaps(entities: list[PIIEntity]) -> list[PIIEntity]:
     return sorted(kept, key=lambda e: e.start)
 
 
-def _hash_content(text: str) -> str:
-    """Hash content for caching detection results.
+# SHA-256 truncated to this many hex chars (64 bits) for all cache keys.
+# Birthday-bound collision probability is ~50% at 2^32 distinct inputs, which is
+# far above any per-Masker cache size in practice.
+_HASH_HEX_LEN = 16
 
-    Uses SHA256 truncated to 12 chars (collision-resistant enough for cache keys,
-    compact enough to be memory-efficient).
-    """
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+def _hash(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:_HASH_HEX_LEN]
+
+
+def _hash_content(text: str) -> str:
+    """Hash text for the mask-result cache."""
+    return _hash(text)
 
 
 def _hash_obj(obj: Any) -> str:
@@ -332,4 +338,4 @@ def _hash_obj(obj: Any) -> str:
     objects and adds no value for our pipeline.
     """
     serialized = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    return _hash(serialized)
