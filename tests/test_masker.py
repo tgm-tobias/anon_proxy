@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from anon_proxy.masker import _resolve_overlaps
 from anon_proxy.privacy_filter import PIIEntity
+from anon_proxy.regex_detector import RegexDetector
+
+from .conftest import span
 
 
 def ent(label: str, start: int, end: int, score: float = 0.9) -> PIIEntity:
@@ -143,3 +146,155 @@ class TestResolveOverlapsOutputSortedByStart:
         c = ent("PERSON", 15, 25)
         out = _resolve_overlaps([a, b, c])
         assert [e.start for e in out] == [0, 15, 30]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: two-pass mask flow.
+#
+# Contract:
+#   1. Empty / whitespace text → returned unchanged, neither pass runs.
+#   2. Pass 1 (extra_detectors): every detector sees the ORIGINAL text. Their
+#      entities are concatenated, _resolve_overlaps'd, and substituted r-to-l
+#      to produce an "intermediate" string.
+#   3. Pass 2 (PrivacyFilter): the filter sees the intermediate. Its entities
+#      are _resolve_overlaps'd and substituted in turn.
+#   4. Both passes share the same PIIStore, so the same canonical value gets
+#      the same placeholder regardless of which pass detected it.
+# ---------------------------------------------------------------------------
+
+
+class TestMaskEmptyShortCircuit:
+    def test_empty_returns_empty_no_passes_run(self, make_masker, fake_pipeline):
+        m = make_masker()
+        assert m.mask("") == ""
+        assert fake_pipeline.calls == []
+
+    def test_whitespace_only_returns_unchanged(self, make_masker, fake_pipeline):
+        m = make_masker()
+        text = "   \t\n  "
+        assert m.mask(text) == text
+        assert fake_pipeline.calls == []
+
+
+class TestMaskNoOpPath:
+    def test_no_detectors_silent_ml_returns_original(self, make_masker, fake_pipeline):
+        m = make_masker()  # no extra_detectors; pipeline returns [] by default
+        text = "hello world"
+        assert m.mask(text) == text
+
+    def test_no_detectors_calls_pipeline_with_full_original(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker()
+        m.mask("hello world")
+        assert fake_pipeline.calls == ["hello world"]
+
+
+class TestRegexOnlyPath:
+    def test_regex_match_becomes_placeholder(self, make_masker, fake_pipeline):
+        detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
+        m = make_masker(extra_detectors=[detector])
+        text = "Call 555-1212 today"
+        # ML sees the intermediate; we register an empty response for it.
+        intermediate = "Call <PHONE_1> today"
+        fake_pipeline.set(intermediate, [])
+        masked = m.mask(text)
+        assert masked == intermediate
+
+    def test_ml_sees_intermediate_not_original(self, make_masker, fake_pipeline):
+        # The ML pipeline must be called with the post-regex intermediate,
+        # not the original.
+        detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
+        m = make_masker(extra_detectors=[detector])
+        text = "Call 555-1212 today"
+        m.mask(text)
+        assert fake_pipeline.calls == ["Call <PHONE_1> today"]
+
+
+class TestMlOnlyPath:
+    def test_ml_match_becomes_placeholder(self, make_masker, fake_pipeline):
+        m = make_masker()
+        text = "Hello Bob"
+        fake_pipeline.set(text, [span("PERSON", 6, 9, score=0.9)])  # "Bob"
+        assert m.mask(text) == "Hello <PERSON_1>"
+
+
+class TestRegexAndMlCombined:
+    def test_independent_regions_each_pass_contributes(self, make_masker, fake_pipeline):
+        detector = RegexDetector({"PHONE": r"\d{3}-\d{4}"})
+        m = make_masker(extra_detectors=[detector])
+        text = "Call 555-1212 about Bob"
+        intermediate = "Call <PHONE_1> about Bob"
+        # "Bob" sits at intermediate[21:24] (after "Call ", "<PHONE_1>", " about ").
+        fake_pipeline.set(intermediate, [span("PERSON", 21, 24, score=0.9)])
+        masked = m.mask(text)
+        assert masked == "Call <PHONE_1> about <PERSON_1>"
+
+    def test_same_canonical_value_across_passes_shares_token(
+        self, make_masker, fake_pipeline, store
+    ):
+        # Regex matches the capitalized "Alice"; ML separately picks up the
+        # lowercase "alice". They canonicalize to the same key → same token.
+        detector = RegexDetector({"PERSON": r"\bAlice\b"})
+        m = make_masker(extra_detectors=[detector])
+        text = "Alice and alice"
+        intermediate = "<PERSON_1> and alice"
+        fake_pipeline.set(intermediate, [span("PERSON", 15, 20, score=0.9)])  # "alice"
+        masked = m.mask(text)
+        assert masked == "<PERSON_1> and <PERSON_1>"
+        # Only one entry in the store; first-seen original ("Alice") preserved.
+        assert len(store) == 1
+        assert store.original("<PERSON_1>") == "Alice"
+
+
+class TestEmptyExtraDetectorsIsTransparent:
+    def test_intermediate_equals_original_when_no_regex_hits(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker(extra_detectors=[RegexDetector({"DIGIT": r"\d+"})])
+        text = "no digits here"
+        m.mask(text)
+        # Regex has no matches → intermediate == original; ML sees original.
+        assert fake_pipeline.calls == ["no digits here"]
+
+
+class TestExtraDetectorsSeeOriginal:
+    """Every extra_detector receives the ORIGINAL text, never the output of
+    another detector. The two-pass model is regex-then-ML, not chained."""
+
+    def test_all_extra_detectors_get_original(self, make_masker):
+        class Recorder:
+            def __init__(self):
+                self.seen: list[str] = []
+
+            def detect(self, text):
+                self.seen.append(text)
+                return []
+
+        d1, d2, d3 = Recorder(), Recorder(), Recorder()
+        m = make_masker(extra_detectors=[d1, d2, d3])
+        text = "the original text"
+        m.mask(text)
+        assert d1.seen == [text]
+        assert d2.seen == [text]
+        assert d3.seen == [text]
+
+
+class TestSubstitutionMechanics:
+    def test_multiple_ml_entities_substituted_right_to_left(
+        self, make_masker, fake_pipeline
+    ):
+        # Two non-overlapping ML hits in one input. They must both make it
+        # through; the r-to-l substitution preserves offsets.
+        m = make_masker()
+        text = "Alice met Bob"
+        fake_pipeline.set(
+            text,
+            [
+                span("PERSON", 0, 5, score=0.9),   # "Alice"
+                span("PERSON", 10, 13, score=0.9), # "Bob"
+            ],
+        )
+        masked = m.mask(text)
+        # Different canonical values → different indices.
+        assert masked == "<PERSON_1> met <PERSON_2>"

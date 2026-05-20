@@ -77,8 +77,8 @@ class Masker:
         ignore_labels: frozenset[str] | set[str] | None = None,
         cache_size: int = 4096,
     ) -> None:
-        self._filter = filter or PrivacyFilter()
-        self._store = store or PIIStore()
+        self._filter = filter if filter is not None else PrivacyFilter()
+        self._store = store if store is not None else PIIStore()
         self._extra: list[Detector] = list(extra_detectors or [])
         self._skip_patterns = skip_patterns or _SKIP_MASK_PATTERNS
         self._ignore_labels: frozenset[str] = frozenset(
@@ -97,6 +97,11 @@ class Masker:
     def mask(self, text: str) -> str:
         record = _TELEMETRY.get()
         t0 = time.perf_counter() if record is not None else 0.0
+
+        # Empty / whitespace-only input has no PII by definition — skip both
+        # passes (and the cache) so the pipeline is never invoked.
+        if not text.strip():
+            return text
 
         # Fast path: check if this text matches any skip pattern
         for pattern in self._skip_patterns:
@@ -162,11 +167,18 @@ class Masker:
             self._cache.popitem(last=False)
 
     def _substitute(self, text: str, entities: list[PIIEntity]) -> str:
-        """Replace entities with placeholder tokens, right-to-left so earlier
-        spans' offsets stay valid."""
+        """Replace entities with placeholder tokens.
+
+        Tokens are allocated left-to-right (so the leftmost entity gets the
+        lowest index — matches human reading order) but applied right-to-left
+        so earlier spans' offsets stay valid as the text is rewritten.
+        """
+        if not entities:
+            return text
+        ordered = sorted(entities, key=lambda e: e.start)
+        tokens = [self._store.get_or_create(e.label, e.text).token for e in ordered]
         masked = text
-        for e in sorted(entities, key=lambda x: x.start, reverse=True):
-            token = self._store.get_or_create(e.label, e.text).token
+        for e, token in zip(reversed(ordered), reversed(tokens)):
             masked = masked[: e.start] + token + masked[e.end :]
         return masked
 

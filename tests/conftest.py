@@ -89,3 +89,40 @@ def make_filter(monkeypatch, fake_pipeline):
 @pytest.fixture
 def store() -> PIIStore:
     return PIIStore()
+
+
+@pytest.fixture
+def make_masker(make_filter, store):
+    """Construct a Masker wired to the test's FakePipeline.
+
+    Defaults:
+      - skip_patterns=[] so the production skip-pattern list doesn't bypass
+        tests that put system-reminder-shaped text into a fixture.
+      - shares the test's `store` fixture so assertions can inspect it.
+
+    Usage:
+        m = make_masker()
+        m = make_masker(extra_detectors=[RegexDetector({"X": r"\\d+"})])
+        m = make_masker(filter_kwargs={"chunk_size": 50})
+    """
+    from anon_proxy.masker import Masker
+
+    def _make(
+        *,
+        filter_kwargs=None,
+        extra_detectors=None,
+        ignore_labels=None,
+        skip_patterns=None,
+        cache_size: int = 4096,
+    ):
+        f = make_filter(**(filter_kwargs or {}))
+        return Masker(
+            filter=f,
+            store=store,
+            extra_detectors=extra_detectors or [],
+            skip_patterns=skip_patterns if skip_patterns is not None else [],
+            ignore_labels=ignore_labels,
+            cache_size=cache_size,
+        )
+
+    return _make
