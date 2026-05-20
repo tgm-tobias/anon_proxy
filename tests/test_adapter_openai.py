@@ -277,3 +277,34 @@ class TestUnmaskResponseToolCalls:
         out = oai.unmask_response(body, masker)
         args = json.loads(out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
         assert args == {"to": "Alice"}
+
+    def test_arguments_invalid_json_unmasked_as_raw_string(self, masker, store):
+        # Phase 4c: symmetric fallback to the mask-side path. If a model
+        # emits invalid JSON in `arguments`, the unmasker treats it as a
+        # plain string and runs `masker.unmask` on it rather than crashing.
+        store.get_or_create("PERSON", "Alice")
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "x",
+                                "type": "function",
+                                "function": {
+                                    "name": "send",
+                                    "arguments": "not json: <PERSON_1>",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        out = oai.unmask_response(body, masker)
+        assert (
+            out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+            == "not json: Alice"
+        )

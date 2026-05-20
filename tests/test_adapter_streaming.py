@@ -534,3 +534,49 @@ class TestOpenAIPassthrough:
         chunk = b"data: not valid json\n\n"
         out = await _collect(oai.transform_stream(_aiter([chunk]), m))
         assert b"not valid json" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 4c: decode-failure / passthrough robustness contracts.
+#
+# Server-level _passthrough (non-POST, empty body, JSON decode failure,
+# not-maskable) is out of plan scope (server.py is read-only support).
+# These tests cover the adapter-level decode-failure paths.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestAnthropicDecodeFailure:
+    async def test_invalid_json_in_sse_data_passes_through(self, make_filter, store):
+        # If the upstream emits a `data:` line that isn't valid JSON,
+        # _transform_event yields data_str unchanged rather than crashing.
+        m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
+        chunk = b"event: content_block_delta\ndata: not valid json\n\n"
+        out = await _collect(anth.transform_stream(_aiter([chunk]), m))
+        assert b"not valid json" in out
+        # Event type preserved too.
+        assert b"event: content_block_delta" in out
+
+
+class TestIsCompleteJson:
+    """Pin the _is_complete_json helper that gates tool_call argument
+    flushing in the OpenAI adapter. Falsy on invalid JSON, truthy on valid."""
+
+    def test_complete_returns_true(self):
+        from anon_proxy.adapters.openai import _is_complete_json
+
+        assert _is_complete_json('{"a": 1}') is True
+        assert _is_complete_json("[]") is True
+        assert _is_complete_json("null") is True
+
+    def test_incomplete_returns_false(self):
+        from anon_proxy.adapters.openai import _is_complete_json
+
+        assert _is_complete_json('{"a":') is False
+        assert _is_complete_json("[1,") is False
+
+    def test_garbage_returns_false(self):
+        from anon_proxy.adapters.openai import _is_complete_json
+
+        assert _is_complete_json("not json at all") is False
+        assert _is_complete_json("") is False
