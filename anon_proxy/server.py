@@ -37,6 +37,7 @@ from anon_proxy.config import Config, load_config
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import PrivacyFilter
 from anon_proxy.regex_detector import RegexDetector
+from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
 
 _DIM = "\033[2m"
@@ -243,6 +244,7 @@ def build_app(
     debug: bool = False,
     metrics: bool = False,
     capture: Capturer | None = None,
+    system_inject: bool = True,
 ) -> Starlette:
     """Build the Starlette application.
 
@@ -252,6 +254,9 @@ def build_app(
         debug: Enable debug logging
         metrics: Enable per-turn latency logging
         capture: Optional Capturer that records each turn's request/response and timing
+        system_inject: If True, prepend a placeholder-explainer system prompt
+            to outbound requests so upstream models echo `<LABEL_N>` tokens
+            verbatim instead of hallucinating fill-in values
     """
     masker = masker or Masker()
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
@@ -267,6 +272,7 @@ def build_app(
             app.state.metrics = metrics
             app.state.capture = capture
             app.state.upstreams = all_upstreams
+            app.state.system_inject = system_inject
             try:
                 yield
             finally:
@@ -393,6 +399,12 @@ async def _handle_proxy(
     if debug:
         new_entries = masker.store.items()[store_before:]
         _log_request(upstream_config.name, api_path, body, masked, new_entries)
+
+    # Inject the placeholder-explainer system prompt *after* masking so the
+    # masker never scans it. `inject_system` merges with whatever the client
+    # already sent (string, list of blocks, or absent).
+    if request.app.state.system_inject and hasattr(adapter, "inject_system"):
+        masked = adapter.inject_system(masked, PLACEHOLDER_SYSTEM_PROMPT)
 
     masked_bytes = json.dumps(masked).encode("utf-8")
     upstream_headers = _forward_request_headers(request.headers)
@@ -726,6 +738,16 @@ def main() -> None:
         help="Path to cached MLX-converted weights. Generated on first use if not found.",
     )
     parser.add_argument(
+        "--no-system-inject",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_NO_SYSTEM_INJECT", "").lower()
+        in ("1", "true", "yes"),
+        help="Disable the placeholder-explainer system prompt that the proxy "
+        "prepends to outbound requests. Useful if you've already added "
+        "equivalent instructions client-side. Also settable via "
+        "`system_inject: false` in config.json.",
+    )
+    parser.add_argument(
         "--extra-upstream",
         action="append",
         default=[],
@@ -792,12 +814,16 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    # CLI flag wins when set; otherwise fall back to config.json.
+    system_inject = cfg.system_inject and not args.no_system_inject
+
     app = build_app(
         masker=masker,
         extra_upstreams=extra_upstreams,
         debug=args.debug,
         metrics=args.metrics,
         capture=capturer,
+        system_inject=system_inject,
     )
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
@@ -809,6 +835,7 @@ def main() -> None:
         f"  metrics: {args.metrics}\n"
         f"  capture: {args.capture or '(off)'}\n"
         f"  config: {args.config or '(None)'}\n"
+        f"  system_inject: {system_inject}\n"
         f"  backend: {backend_display}\n"
         f"\nUsage examples:\n"
         f"  Anthropic: base_url=http://{args.host}:{args.port}/anthropic\n"

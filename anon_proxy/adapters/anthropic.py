@@ -43,6 +43,24 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
+def inject_system(body: dict, prompt: str) -> dict:
+    """Prepend `prompt` to the request's `system` field.
+
+    Anthropic's `system` can be absent, a plain string, or a list of content
+    blocks. We preserve the client's value and merge ours in front so any
+    `cache_control` markers the client placed on later blocks stay valid.
+    """
+    result = dict(body)
+    existing = body.get("system")
+    if existing is None:
+        result["system"] = prompt
+    elif isinstance(existing, str):
+        result["system"] = f"{prompt}\n\n{existing}"
+    elif isinstance(existing, list):
+        result["system"] = [{"type": "text", "text": prompt}, *existing]
+    return result
+
+
 def unmask_response(body: dict, masker: Masker) -> dict:
     """Return a copy of a non-streaming Messages response with text unmasked."""
     result = dict(body)

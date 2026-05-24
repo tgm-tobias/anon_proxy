@@ -37,6 +37,7 @@ from prompt_toolkit import ANSI, PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 
 from anon_proxy import Config, Masker, PrivacyFilter, RegexDetector, load_config
+from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
 
 
 # Provider configurations
@@ -53,17 +54,11 @@ PROVIDERS = {
     },
 }
 
-SYSTEM_PROMPT = (
-    "You are a helpful assistant. The user's messages may contain placeholder "
-    "tokens like <PERSON_1>, <EMAIL_1>, <PHONE_1>, <ADDRESS_1>, <DATE_1>, "
-    "<ACCOUNT_NUMBER_1>, etc. Each token is an opaque reference to a real "
-    "private value that has been redacted. Two occurrences of the same token "
-    "always refer to the same entity. When you need to refer to one of these "
-    "entities in your reply, use the token verbatim - do NOT invent real "
-    "names, emails, phone numbers, or other values, and do NOT rewrite tokens "
-    "as generic labels like [REDACTED]. The user will see the original values "
-    "re-inserted into your response."
-)
+# Single source of truth lives in anon_proxy.system_prompt — same text the
+# proxy injects, so local-masking mode (this script masks, talks straight to
+# the API) and proxy-masking mode (`--no-mask` + base_url=anon-proxy) produce
+# the same upstream view.
+SYSTEM_PROMPT = PLACEHOLDER_SYSTEM_PROMPT
 
 DIM = "\033[2m"
 CYAN = "\033[96m"
@@ -203,6 +198,12 @@ def main() -> int:
     else:
         return 1
 
+    # With --no-mask the assumption is that anon-proxy sits between us and the
+    # upstream API and will inject its own placeholder-explainer system prompt;
+    # sending ours would just duplicate it. Drop it so the upstream sees exactly
+    # one copy in either mode.
+    system_prompt: str | None = None if args.no_mask else SYSTEM_PROMPT
+
     status_bits = [f"provider={args.provider}", f"model={model}"]
     status_bits.append("masking=off" if args.no_mask else "masking=local")
     if base_url:
@@ -240,7 +241,7 @@ def main() -> int:
         try:
             if args.provider == "anthropic":
                 assistant_text, final = await_anthropic_stream(
-                    client, model, args.max_tokens, history
+                    client, model, args.max_tokens, history, system_prompt
                 )
                 history.append({"role": "assistant", "content": final.content})
                 usage = final.usage
@@ -252,7 +253,7 @@ def main() -> int:
                 )
             else:  # openai
                 assistant_text, usage = await_openai_stream(
-                    client, model, args.max_tokens, history
+                    client, model, args.max_tokens, history, system_prompt
                 )
                 history.append({"role": "assistant", "content": assistant_text})
                 if usage:
@@ -282,16 +283,22 @@ def main() -> int:
 
 
 def await_anthropic_stream(
-    client, model: str, max_tokens: int, history: list[dict]
+    client,
+    model: str,
+    max_tokens: int,
+    history: list[dict],
+    system_prompt: str | None,
 ) -> tuple[str, any]:
-    """Stream Anthropic API response."""
-    with client.messages.stream(
-        model=model,
-        max_tokens=max_tokens,
-        system=SYSTEM_PROMPT,
-        messages=history,
-        cache_control={"type": "ephemeral"},
-    ) as stream:
+    """Stream Anthropic API response. `system_prompt=None` omits the system field."""
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": history,
+        "cache_control": {"type": "ephemeral"},
+    }
+    if system_prompt is not None:
+        kwargs["system"] = system_prompt
+    with client.messages.stream(**kwargs) as stream:
         print(f"{CYAN}claude>{RESET} {DIM}", end="", flush=True)
         for chunk in stream.text_stream:
             print(chunk, end="", flush=True)
@@ -301,10 +308,18 @@ def await_anthropic_stream(
 
 
 def await_openai_stream(
-    client, model: str, max_tokens: int, history: list[dict]
+    client,
+    model: str,
+    max_tokens: int,
+    history: list[dict],
+    system_prompt: str | None,
 ) -> tuple[str, any]:
-    """Stream OpenAI API response."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+    """Stream OpenAI API response. `system_prompt=None` omits the system message."""
+    messages = (
+        [{"role": "system", "content": system_prompt}, *history]
+        if system_prompt is not None
+        else list(history)
+    )
     stream = client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,

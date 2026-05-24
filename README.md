@@ -114,6 +114,7 @@ uv run python -m anon_proxy.server [options]
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
+| `--no-system-inject` | off | Disable the placeholder-explainer system prompt that the proxy prepends to outbound requests. Also settable via `system_inject: false` in `config.json`. |
 
 **Add a custom provider:**
 ```bash
@@ -133,7 +134,7 @@ uv run python -m anon_proxy.server \
 
 ### Config file
 
-`config.json` is a single JSON object with three optional top-level keys:
+`config.json` is a single JSON object with four optional top-level keys:
 
 ```json
 {
@@ -145,13 +146,15 @@ uv run python -m anon_proxy.server \
     "PERSON": " \t\n-'.",
     "EMAIL":  ""
   },
-  "ignore_labels": ["DATE", "TITLE"]
+  "ignore_labels": ["DATE", "TITLE"],
+  "system_inject": true
 }
 ```
 
 - **`patterns`** — extra regex detectors for PII the ML model misses (SSNs, IPs, internal IDs). Run *before* the ML pass; matches are substituted inline so the model still sees full sentence context.
 - **`merge_gap`** — per-label characters allowed inside a gap when merging adjacent same-label spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token). Overrides entries in the model's defaults; labels you don't mention keep the default.
 - **`ignore_labels`** — labels detected by the ML model that should *not* be masked. Useful for noisy categories (e.g. `DATE`, `TITLE`) that confuse the upstream LLM more than they protect privacy. Regex matches are unaffected — if you don't want a regex label, just don't include it in `patterns`.
+- **`system_inject`** *(default `true`)* — prepend a short system prompt to outbound requests telling the model that `<LABEL_N>` tokens are opaque references it should echo verbatim, not invent fill-in values for. Merged with any system prompt the client already sent (so client `cache_control` markers on later blocks stay valid). Disable if you've already embedded equivalent instructions client-side, or pass `--no-system-inject` on the command line.
 
 See [`config.json`](config.json) at the repo root for a working example.
 

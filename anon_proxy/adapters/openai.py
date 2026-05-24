@@ -44,6 +44,36 @@ def mask_request(body: dict, masker: Masker) -> dict:
     return result
 
 
+def inject_system(body: dict, prompt: str) -> dict:
+    """Prepend `prompt` as system instruction in the OpenAI request.
+
+    If the first message is a `system` (or `developer`) message, we merge our
+    text into the front of its content. Otherwise, we insert a new `system`
+    message at index 0. Either way the injected text comes first so the model
+    sees the placeholder explanation before any client-supplied instructions.
+    """
+    result = dict(body)
+    messages = list(body.get("messages") or [])
+    if (
+        messages
+        and isinstance(messages[0], dict)
+        and messages[0].get("role") in ("system", "developer")
+    ):
+        first = dict(messages[0])
+        content = first.get("content")
+        if isinstance(content, str):
+            first["content"] = f"{prompt}\n\n{content}"
+        elif isinstance(content, list):
+            first["content"] = [{"type": "text", "text": prompt}, *content]
+        else:
+            first["content"] = prompt
+        messages[0] = first
+    else:
+        messages.insert(0, {"role": "system", "content": prompt})
+    result["messages"] = messages
+    return result
+
+
 def unmask_response(body: dict, masker: Masker) -> dict:
     """Return a copy of a non-streaming response with text unmasked."""
     result = dict(body)

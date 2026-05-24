@@ -372,3 +372,64 @@ class TestUnmaskResponseBlocks:
             "context_management",
         ):
             assert out[k] == body[k], f"field {k} not preserved"
+
+
+# ---------------------------------------------------------------------------
+# inject_system
+# ---------------------------------------------------------------------------
+
+
+class TestInjectSystem:
+    PROMPT = "INJECTED PROMPT"
+
+    def test_absent_system_sets_string(self):
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        out = anth.inject_system(body, self.PROMPT)
+        assert out["system"] == self.PROMPT
+        # Messages untouched.
+        assert out["messages"] == body["messages"]
+
+    def test_string_system_is_prepended_with_blank_line(self):
+        body = {"system": "You are helpful."}
+        out = anth.inject_system(body, self.PROMPT)
+        assert out["system"] == f"{self.PROMPT}\n\nYou are helpful."
+
+    def test_list_system_prepends_text_block(self):
+        original_blocks = [
+            {"type": "text", "text": "You are helpful."},
+            {
+                "type": "text",
+                "text": "Static rules.",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        body = {"system": list(original_blocks)}
+        out = anth.inject_system(body, self.PROMPT)
+        assert out["system"][0] == {"type": "text", "text": self.PROMPT}
+        # Client's blocks (and any cache_control on them) preserved in order.
+        assert out["system"][1:] == original_blocks
+
+    def test_returns_copy_input_not_mutated(self):
+        body = {"system": "orig", "messages": []}
+        original = {"system": "orig", "messages": []}
+        anth.inject_system(body, self.PROMPT)
+        assert body == original
+
+    def test_list_system_does_not_mutate_input_list(self):
+        original_blocks = [{"type": "text", "text": "orig"}]
+        body = {"system": original_blocks}
+        anth.inject_system(body, self.PROMPT)
+        # The original list reference must not have been prepended to.
+        assert original_blocks == [{"type": "text", "text": "orig"}]
+
+    def test_other_fields_preserved(self):
+        body = {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "calc"}],
+        }
+        out = anth.inject_system(body, self.PROMPT)
+        for k in ("model", "max_tokens", "messages", "tools"):
+            assert out[k] == body[k]
+        assert out["system"] == self.PROMPT

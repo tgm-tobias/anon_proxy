@@ -324,3 +324,95 @@ class TestUnmaskResponseToolCalls:
             out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
             == "not json: Alice"
         )
+
+
+# ---------------------------------------------------------------------------
+# inject_system
+# ---------------------------------------------------------------------------
+
+
+class TestInjectSystem:
+    PROMPT = "INJECTED PROMPT"
+
+    def test_no_messages_inserts_system(self):
+        body = {"model": "gpt-4o"}
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"] == [{"role": "system", "content": self.PROMPT}]
+        assert out["model"] == "gpt-4o"
+
+    def test_empty_messages_inserts_system(self):
+        body = {"messages": []}
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"] == [{"role": "system", "content": self.PROMPT}]
+
+    def test_user_first_prepends_new_system_message(self):
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"] == [
+            {"role": "system", "content": self.PROMPT},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_system_first_merges_string_content(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"][0] == {
+            "role": "system",
+            "content": f"{self.PROMPT}\n\nYou are helpful.",
+        }
+        assert out["messages"][1] == body["messages"][1]
+
+    def test_developer_first_treated_like_system(self):
+        body = {
+            "messages": [
+                {"role": "developer", "content": "Be terse."},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"][0] == {
+            "role": "developer",
+            "content": f"{self.PROMPT}\n\nBe terse.",
+        }
+
+    def test_system_first_merges_list_content(self):
+        original_items = [{"type": "text", "text": "You are helpful."}]
+        body = {
+            "messages": [
+                {"role": "system", "content": list(original_items)},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        out = oai.inject_system(body, self.PROMPT)
+        assert out["messages"][0]["content"] == [
+            {"type": "text", "text": self.PROMPT},
+            *original_items,
+        ]
+
+    def test_returns_copy_input_not_mutated(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "orig"},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        original_messages = [dict(m) for m in body["messages"]]
+        oai.inject_system(body, self.PROMPT)
+        assert body["messages"] == original_messages
+
+    def test_other_fields_preserved(self):
+        body = {
+            "model": "gpt-4o",
+            "temperature": 0.7,
+            "tools": [{"function": {"name": "calc"}}],
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        out = oai.inject_system(body, self.PROMPT)
+        for k in ("model", "temperature", "tools"):
+            assert out[k] == body[k]
+        assert out["messages"][0]["role"] == "system"
