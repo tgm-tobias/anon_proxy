@@ -7,6 +7,19 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ruff check
+        uses: astral-sh/ruff-action@v3
+
+      - name: Run ruff format check
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check"
+
   test:
     runs-on: ubuntu-latest
     strategy:

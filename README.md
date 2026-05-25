@@ -4,6 +4,7 @@
 
 **Use Claude Code, ChatGPT, and other LLM APIs on sensitive data without sending raw PII to the cloud.** A local privacy proxy that masks personal information *before* requests leave your device and unmasks it in responses. The [openai/privacy-filter](https://huggingface.co/openai/privacy-filter) model runs entirely on your machine — names, emails, phone numbers, and addresses never reach Anthropic, OpenAI, or any other upstream API.
 
+[![CI](https://github.com/KevinXuxuxu/anon_proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/KevinXuxuxu/anon_proxy/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-orange)
