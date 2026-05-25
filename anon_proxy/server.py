@@ -28,7 +28,7 @@ import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
@@ -181,7 +181,7 @@ def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
         masked_display = masked.replace("\\", "\\\\").replace("\n", "\\n")
         unmasked_display = unmasked.replace("\\", "\\\\").replace("\n", "\\n")
         print(f"  {masked_display}", file=sys.stderr)
-        print(f"  →", file=sys.stderr)
+        print("  →", file=sys.stderr)
         print(f"  {unmasked_display}", file=sys.stderr)
         print(file=sys.stderr)  # Empty line separator
     sys.stderr.flush()
@@ -298,7 +298,6 @@ def build_app(
             )
 
         provider = path_parts[0]
-        api_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
 
         # Get upstream config
         try:

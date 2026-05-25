@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from anon_proxy.mapping import Placeholder, PIIStore, normalize_label
+from anon_proxy.mapping import Placeholder, normalize_label
 
 
 # ---------------------------------------------------------------------------

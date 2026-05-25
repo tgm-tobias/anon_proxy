@@ -7,9 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from anon_proxy.masker import Masker
+    pass
 
 
 @dataclass(frozen=True)

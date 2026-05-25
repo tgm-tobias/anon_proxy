@@ -8,7 +8,6 @@ inject canned spans via `fake_pipeline.set(text, [...])`.
 
 from __future__ import annotations
 
-from typing import Iterable
 
 import pytest
 

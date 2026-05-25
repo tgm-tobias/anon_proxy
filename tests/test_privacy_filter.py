@@ -20,7 +20,6 @@ import pytest
 from anon_proxy import privacy_filter
 from anon_proxy.privacy_filter import (
     DEFAULT_MERGE_GAP_ALLOWED,
-    PIIEntity,
     PrivacyFilter,
     _gap_mergeable,
     _split_chunks,
