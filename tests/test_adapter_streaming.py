@@ -329,6 +329,91 @@ class TestAnthropicBufferFlushOnBlockStop:
 
 
 @pytest.mark.asyncio
+class TestAnthropicThinkingDelta:
+    async def test_thinking_delta_unmasked(self, make_filter, store):
+        m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
+        chunks = [
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": "sig",
+                    },
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "thinking_delta",
+                        "thinking": "thinking about <PERSON_1>",
+                    },
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
+        ]
+        out = (await _collect(anth.transform_stream(_aiter(chunks), m))).decode()
+        assert "thinking about Alice" in out
+        assert "<PERSON_1>" not in out
+
+    async def test_thinking_delta_split_across_chunks(self, make_filter, store):
+        m = _make_masker_with_tokens(make_filter, store, ("PERSON", "Alice"))
+        chunks = [
+            _sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "hi <PER"},
+                },
+            ),
+            _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "SON_1>"},
+                },
+            ),
+            _sse_event(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": 0,
+                },
+            ),
+        ]
+        out = await _collect(anth.transform_stream(_aiter(chunks), m))
+        decoded = out.decode()
+        # "hi " is emitted in the first delta, "Alice" in the second — they
+        # are never combined into a single "hi Alice" in the raw SSE text.
+        assert '"thinking": "hi "' in decoded
+        assert '"thinking": "Alice"' in decoded
+        assert "<PER" not in decoded
+        assert "<PERSON_1>" not in decoded
+
+
+@pytest.mark.asyncio
 class TestAnthropicMultipleBlocks:
     async def test_independent_blocks_have_independent_buffers(
         self, make_filter, store

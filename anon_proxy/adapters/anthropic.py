@@ -67,7 +67,11 @@ def unmask_response(body: dict, masker: Masker) -> dict:
     content = body.get("content")
     if isinstance(content, list):
         result["content"] = [_unmask_block(b, masker) for b in content]
-    return result
+    # Blanket pass: walk every string leaf in the response body and unmask any
+    # remaining placeholder tokens. Catches tokens in thinking blocks, future
+    # block types, metadata fields, or any other location the targeted block
+    # handlers don't cover. Cost is ~100 µs for a typical response.
+    return _walk_strings(result, masker.unmask)
 
 
 def _mask_message(message, masker: Masker):
@@ -138,6 +142,7 @@ _STREAM_HANDLERS: dict[str, dict] = {
         "field": "partial_json",
         "escape": True,
     },
+    "thinking": {"delta_type": "thinking_delta", "field": "thinking", "escape": False},
 }
 
 

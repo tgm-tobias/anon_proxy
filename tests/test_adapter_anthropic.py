@@ -331,12 +331,34 @@ class TestUnmaskResponseBlocks:
         out = anth.unmask_response(body, masker)
         assert out["content"][0]["input"] == {"to": "Alice"}
 
-    def test_other_block_types_passed_through(self, masker, store):
+    def test_thinking_block_unmasked_by_blanket_pass(self, masker, store):
         store.get_or_create("PERSON", "Alice")
-        body = {"content": [{"type": "thinking", "text": "<PERSON_1>"}]}
+        body = {"content": [{"type": "thinking", "thinking": "<PERSON_1>"}]}
         out = anth.unmask_response(body, masker)
-        # thinking block not unmasked.
-        assert out["content"][0]["text"] == "<PERSON_1>"
+        # The blanket _walk_strings pass catches tokens in thinking blocks.
+        assert out["content"][0]["thinking"] == "Alice"
+
+    def test_blanket_pass_unmasks_tokens_in_top_level_fields(self, masker, store):
+        store.get_or_create("PERSON", "Alice")
+        body = {
+            "content": [],
+            "custom_metadata": {"note": "Reply to <PERSON_1>"},
+        }
+        out = anth.unmask_response(body, masker)
+        assert out["custom_metadata"]["note"] == "Reply to Alice"
+
+    def test_blanket_pass_does_not_corrupt_clean_fields(self, masker, store):
+        store.get_or_create("PERSON", "Alice")
+        body = {
+            "id": "msg_abc123",
+            "type": "message",
+            "content": [],
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        }
+        out = anth.unmask_response(body, masker)
+        assert out["id"] == "msg_abc123"
+        assert out["type"] == "message"
+        assert out["usage"] == {"input_tokens": 10, "output_tokens": 1}
 
     def test_response_metadata_preserved(self, masker, store):
         # Real non-streaming responses carry id, type, role, stop_reason,
