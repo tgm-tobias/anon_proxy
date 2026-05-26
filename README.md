@@ -135,7 +135,7 @@ uv run python -m anon_proxy.server \
 
 ### Config file
 
-`config.json` is a single JSON object with four optional top-level keys:
+`config.json` is a single JSON object with five optional top-level keys:
 
 ```json
 {
@@ -148,7 +148,14 @@ uv run python -m anon_proxy.server \
     "EMAIL":  ""
   },
   "ignore_labels": ["DATE", "TITLE"],
-  "system_inject": true
+  "system_inject": true,
+  "upstreams": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "adapter": "anthropic",
+      "path_prefix": "anthropic"
+    }
+  }
 }
 ```
 
@@ -156,6 +163,7 @@ uv run python -m anon_proxy.server \
 - **`merge_gap`** — per-label characters allowed inside a gap when merging adjacent same-label spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token). Overrides entries in the model's defaults; labels you don't mention keep the default.
 - **`ignore_labels`** — labels detected by the ML model that should *not* be masked. Useful for noisy categories (e.g. `DATE`, `TITLE`) that confuse the upstream LLM more than they protect privacy. Regex matches are unaffected — if you don't want a regex label, just don't include it in `patterns`.
 - **`system_inject`** *(default `true`)* — prepend a short system prompt to outbound requests telling the model that `<LABEL_N>` tokens are opaque references it should echo verbatim, not invent fill-in values for. Merged with any system prompt the client already sent (so client `cache_control` markers on later blocks stay valid). Disable if you've already embedded equivalent instructions client-side, or pass `--no-system-inject` on the command line.
+- **`upstreams`** — extra upstream providers, keyed by URL-prefix name. Each entry needs `base_url`; `adapter` (`"anthropic"` or `"openai"`, default `"anthropic"`), `path_prefix`, and `sse` are optional. Same shape as `--extra-upstream`; CLI flags override config entries with the same name.
 
 See [`config.json`](config.json) at the repo root for a working example.
 

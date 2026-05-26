@@ -756,16 +756,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Parse extra upstreams
-    extra_upstreams = {}
-    for spec in args.extra_upstream:
-        try:
-            name, config = _parse_extra_upstream(spec)
-            extra_upstreams[name] = config
-        except ValueError as e:
-            print(f"error: {e}", file=sys.stderr)
-            sys.exit(2)
-
     if args.config:
         try:
             cfg = load_config(args.config)
@@ -774,6 +764,18 @@ def main() -> None:
             sys.exit(2)
     else:
         cfg = Config()
+
+    # Parse extra upstreams. Config-file entries are applied first; CLI flags
+    # take precedence on conflict so you can override a configured provider
+    # without editing the file.
+    extra_upstreams: dict[str, UpstreamConfig] = dict(cfg.upstreams)
+    for spec in args.extra_upstream:
+        try:
+            name, config = _parse_extra_upstream(spec)
+            extra_upstreams[name] = config
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
 
     extra_detectors = []
     if cfg.patterns:

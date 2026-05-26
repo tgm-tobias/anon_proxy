@@ -6,9 +6,14 @@ from pathlib import Path
 # working; the canonical definition lives next to PIIStore which owns the
 # placeholder format.
 from anon_proxy.mapping import normalize_label  # noqa: F401
+from anon_proxy.upstream import UpstreamConfig
 
 
-_ALLOWED_KEYS = frozenset({"patterns", "merge_gap", "ignore_labels", "system_inject"})
+_ALLOWED_KEYS = frozenset(
+    {"patterns", "merge_gap", "ignore_labels", "system_inject", "upstreams"}
+)
+_ALLOWED_UPSTREAM_KEYS = frozenset({"base_url", "adapter", "path_prefix", "sse"})
+_ALLOWED_ADAPTERS = frozenset({"anthropic", "openai"})
 
 
 @dataclass(frozen=True)
@@ -17,6 +22,7 @@ class Config:
     merge_gap: dict[str, str] = field(default_factory=dict)
     ignore_labels: frozenset[str] = field(default_factory=frozenset)
     system_inject: bool = True
+    upstreams: dict[str, UpstreamConfig] = field(default_factory=dict)
 
 
 def load_config(path: str | Path) -> Config:
@@ -26,7 +32,15 @@ def load_config(path: str | Path) -> Config:
           "patterns":      {"LABEL": "regex", ...},   # optional
           "merge_gap":     {"LABEL": "chars", ...},   # optional
           "ignore_labels": ["LABEL", ...],            # optional
-          "system_inject": true                       # optional, default true
+          "system_inject": true,                      # optional, default true
+          "upstreams": {                              # optional extra providers
+            "NAME": {
+              "base_url": "https://...",              # required
+              "adapter": "anthropic" | "openai",      # optional, default "anthropic"
+              "path_prefix": "api/anthropic",         # optional
+              "sse": true                             # optional, default true
+            }
+          }
         }
 
     Missing top-level keys default to empty. Unknown top-level keys, malformed
@@ -51,13 +65,59 @@ def load_config(path: str | Path) -> Config:
     merge_gap = _str_dict(data.get("merge_gap", {}), path, "merge_gap")
     ignore_labels = _str_list_set(data.get("ignore_labels", []), path, "ignore_labels")
     system_inject = _bool(data.get("system_inject", True), path, "system_inject")
+    upstreams = _upstreams(data.get("upstreams", {}), path)
 
     return Config(
         patterns=patterns,
         merge_gap=merge_gap,
         ignore_labels=frozenset(normalize_label(s) for s in ignore_labels),
         system_inject=system_inject,
+        upstreams=upstreams,
     )
+
+
+def _upstreams(value: object, path: str | Path) -> dict[str, UpstreamConfig]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: 'upstreams' must be a JSON object of name -> spec")
+    result: dict[str, UpstreamConfig] = {}
+    for name, spec in value.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(
+                f"{path}: 'upstreams' has non-string or empty key: {name!r}"
+            )
+        if not isinstance(spec, dict):
+            raise ValueError(f"{path}: 'upstreams.{name}' must be a JSON object")
+        unknown = set(spec) - _ALLOWED_UPSTREAM_KEYS
+        if unknown:
+            raise ValueError(
+                f"{path}: 'upstreams.{name}' has unknown keys: {sorted(unknown)!r} "
+                f"(allowed: {sorted(_ALLOWED_UPSTREAM_KEYS)!r})"
+            )
+        base_url = spec.get("base_url")
+        if not isinstance(base_url, str) or not base_url:
+            raise ValueError(
+                f"{path}: 'upstreams.{name}.base_url' is required and must be a string"
+            )
+        adapter = spec.get("adapter", "anthropic")
+        if adapter not in _ALLOWED_ADAPTERS:
+            raise ValueError(
+                f"{path}: 'upstreams.{name}.adapter' must be one of "
+                f"{sorted(_ALLOWED_ADAPTERS)!r}, got {adapter!r}"
+            )
+        path_prefix = spec.get("path_prefix", "")
+        if not isinstance(path_prefix, str):
+            raise ValueError(f"{path}: 'upstreams.{name}.path_prefix' must be a string")
+        sse = spec.get("sse", True)
+        if not isinstance(sse, bool):
+            raise ValueError(f"{path}: 'upstreams.{name}.sse' must be a JSON boolean")
+        result[name] = UpstreamConfig(
+            name=name,
+            base_url=base_url.rstrip("/"),
+            path_prefix=path_prefix,
+            adapter=adapter,
+            sse=sse,
+        )
+    return result
 
 
 def _str_dict(value: object, path: str | Path, field: str) -> dict[str, str]:

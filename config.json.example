@@ -16,5 +16,13 @@
     "PHONE":        "",
     "URL":          ""
   },
-  "ignore_labels": []
+  "ignore_labels": [],
+  "system_inject": true,
+  "upstreams": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "adapter": "anthropic",
+      "path_prefix": "anthropic"
+    }
+  }
 }
