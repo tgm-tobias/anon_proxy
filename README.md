@@ -112,6 +112,7 @@ uv run python -m anon_proxy.server [options]
 | `--port` | `8080` | Listen port |
 | `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `mlx`) |
 | `--extra-upstream` | — | Add custom provider: `name=url[;adapter=anthropic\|openai][;path_prefix=/path]` |
+| `--store <file>` | — | Path to persistent PII mapping store. Loaded at startup; saved after each request with new entries. Enables cross-restart placeholder consistency — see [Persistent store](#persistent-store) below. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
 | `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
@@ -166,6 +167,37 @@ uv run python -m anon_proxy.server \
 - **`upstreams`** — extra upstream providers, keyed by URL-prefix name. Each entry needs `base_url`; `adapter` (`"anthropic"` or `"openai"`, default `"anthropic"`), `path_prefix`, and `sse` are optional. Same shape as `--extra-upstream`; CLI flags override config entries with the same name.
 
 See [`config.json`](config.json) at the repo root for a working example.
+
+### Persistent store
+
+By default, placeholder mappings live only in memory and are lost when the proxy restarts. Pass `--store` to persist them to disk:
+
+```bash
+uv run python -m anon_proxy.server --store /data/pii_store.json
+```
+
+The store file is loaded at startup and updated after each request that discovers new PII. On restart the proxy picks up where it left off, so `<PERSON_1>` still refers to the same person.
+
+The store is a flat JSON file — human-readable, easy to inspect, backup, or pre-seed:
+
+```json
+{
+  "reverse": {
+    "<PERSON_1>": "Alice Smith",
+    "<EMAIL_1>": "alice@company.com",
+    "<PHONE_1>": "555-867-5309"
+  },
+  "counters": {
+    "PERSON": 2,
+    "EMAIL": 2,
+    "PHONE": 2
+  }
+}
+```
+
+Writes are atomic (written to a `.tmp` file, then renamed) and offloaded to a thread pool so they never block the event loop. If a write fails (disk full, permissions), the error is logged to stderr and the request completes normally — the mapping survives in memory and will be retried on the next write.
+
+Also settable via `ANON_PROXY_STORE` environment variable.
 
 ## Docker
 
@@ -257,7 +289,7 @@ With `--debug`, each request prints a compact diff to stderr:
 
 **What is NOT masked:** the system prompt (tool schemas and static instructions), tool definitions, and extended-thinking blocks (signatures would break). See [`SECURITY.md`](SECURITY.md) for the full threat model and known limitations.
 
-**How it works:** PII spans get stable placeholder tokens (`<PERSON_1>`, `<EMAIL_1>`, `<ADDRESS_1>`, …) stored in a per-session dictionary. The same value always maps to the same token across turns so the model stays coherent. Responses are unmasked before reaching your client.
+**How it works:** PII spans get stable placeholder tokens (`<PERSON_1>`, `<EMAIL_1>`, `<ADDRESS_1>`, …) stored in an in-memory mapping. The same value always maps to the same token across turns so the model stays coherent. Optionally persist this mapping to disk with `--store` (see [Persistent store](#persistent-store)). Responses are unmasked before reaching your client.
 
 ---
 
@@ -305,7 +337,7 @@ See [`SECURITY.md`](SECURITY.md). For a privacy tool, *quietly* is usually bette
 
 - **Quality assurance** : Enhance PII detection quality tracking and add comprehensive unit/integration tests with benchmarking.
 - **Observability** : Implement structured logging and telemetry for monitoring proxy performance and PII masking metrics.
-- **Persistence** : Optionally persist PII mappings to disk so placeholder consistency survives server restarts.
+- ~~**Persistence** : PII mappings can be persisted to disk via `--store` so placeholder consistency survives server restarts.~~ ✅
 - **Usability** : Now supporting Anthropic and OpenAI APIs, but need more compatibility testing and expand to other potential providers.
 - **Dev infrastructure** : Set up CI, contribution guidelines, and project templates to streamline community development.
 

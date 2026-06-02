@@ -1,3 +1,5 @@
+import json
+import os
 import re
 from dataclasses import dataclass
 
@@ -55,6 +57,58 @@ class PIIStore:
     def __len__(self) -> int:
         return len(self._reverse)
 
+    # ---- serialization --------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict.
+
+        The returned dict has two keys:
+          ``reverse``  — ``{token: original_value, ...}``
+          ``counters`` — ``{label: next_index, ...}``
+
+        The forward map is reconstructed on deserialization.
+        """
+        return {
+            "reverse": dict(self._reverse),
+            "counters": dict(self._counters),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PIIStore":
+        """Deserialize a dict returned by :meth:`to_dict`.
+
+        Rebuilds the forward lookup from token→original entries, so a
+        round-trip preserves all mappings.
+        """
+        store = cls()
+        store._reverse = dict(data["reverse"])
+        store._counters = dict(data["counters"])
+        for token, original in store._reverse.items():
+            parsed = _parse_token(token)
+            if parsed is None:
+                continue
+            label, idx = parsed
+            key = (label, _canonical(original))
+            store._forward[key] = Placeholder(label=label, index=idx, token=token)
+        return store
+
+    def save(self, path: str) -> None:
+        """Atomically write the store to *path* as JSON."""
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        os.replace(tmp, path)
+
+    @classmethod
+    def load(cls, path: str) -> "PIIStore":
+        """Read a JSON file written by :meth:`save` and return a new store."""
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{path}: invalid JSON — {e}") from e
+        return cls.from_dict(data)
+
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -72,3 +126,21 @@ def normalize_label(label: str) -> str:
     """
     trimmed = label[len("private_") :] if label.startswith("private_") else label
     return trimmed.upper()
+
+
+# Matches placeholder tokens created by PIIStore.get_or_create:
+# ``<{LABEL}_{N}>``.  Greedy ``[A-Z0-9_]*`` backtracks far enough for the
+# ``_\d+>`` suffix, so labels ending in digits are handled correctly
+# (e.g. ``<MY_LABEL_123_1>`` → label=MY_LABEL_123, index=1).
+_TOKEN_PARSE_RE = re.compile(r"<([A-Z][A-Z0-9_]*)_(\d+)>")
+
+
+def _parse_token(token: str) -> tuple[str, int] | None:
+    """Split a ``<LABEL_N>`` token into ``(label, index)``.
+
+    Returns ``None`` for strings that don't look like a valid placeholder.
+    """
+    m = _TOKEN_PARSE_RE.match(token)
+    if m is None:
+        return None
+    return m.group(1), int(m.group(2))

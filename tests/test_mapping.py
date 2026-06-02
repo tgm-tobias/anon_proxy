@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from anon_proxy.mapping import Placeholder, normalize_label
+from anon_proxy.mapping import PIIStore, Placeholder, normalize_label
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +240,149 @@ class TestPlaceholder:
         # The store always constructs Placeholders with consistent fields.
         ph = store.get_or_create("PERSON", "Alice")
         assert ph.token == f"<{ph.label}_{ph.index}>"
+
+
+# ---------------------------------------------------------------------------
+# Serialization: to_dict / from_dict / save / load.
+# ---------------------------------------------------------------------------
+
+
+class TestSerialization:
+    def test_empty_store_to_dict(self):
+        assert PIIStore().to_dict() == {"reverse": {}, "counters": {}}
+
+    def test_empty_roundtrip(self):
+        data = PIIStore().to_dict()
+        restored = PIIStore.from_dict(data)
+        assert len(restored) == 0
+        assert restored.tokens() == []
+
+    def test_populated_roundtrip(self, store):
+        store.get_or_create("PERSON", "Alice Smith")
+        store.get_or_create("EMAIL", "alice@example.com")
+        store.get_or_create("PERSON", "Bob")
+        items_before = store.items()
+        data = store.to_dict()
+        restored = PIIStore.from_dict(data)
+        assert restored.items() == items_before
+        assert len(restored) == len(store)
+
+    def test_roundtrip_preserves_first_seen_original(self, store):
+        store.get_or_create("PERSON", "Alice Smith")
+        store.get_or_create("PERSON", "alice smith")  # same canonical
+        data = store.to_dict()
+        restored = PIIStore.from_dict(data)
+        assert restored.original("<PERSON_1>") == "Alice Smith"
+
+    def test_counters_restored(self, store):
+        store.get_or_create("PERSON", "Alice")
+        store.get_or_create("PERSON", "Bob")
+        store.get_or_create("EMAIL", "a@b.com")
+        data = store.to_dict()
+        restored = PIIStore.from_dict(data)
+        assert restored.get_or_create("PERSON", "Carol").token == "<PERSON_3>"
+        assert restored.get_or_create("EMAIL", "c@d.com").token == "<EMAIL_2>"
+
+    def test_insertion_order_preserved(self, store):
+        store.get_or_create("PERSON", "C")
+        store.get_or_create("EMAIL", "b@b.com")
+        store.get_or_create("PERSON", "A")
+        data = store.to_dict()
+        restored = PIIStore.from_dict(data)
+        assert restored.tokens() == ["<PERSON_1>", "<EMAIL_1>", "<PERSON_2>"]
+
+    def test_label_ending_in_digits_roundtrip(self, store):
+        """Labels from regex detectors can end in digits (e.g. PHONE_NUMBER_123)."""
+        store.get_or_create("PHONE_NUMBER_123", "555-0100")
+        data = store.to_dict()
+        restored = PIIStore.from_dict(data)
+        assert restored.original("<PHONE_NUMBER_123_1>") == "555-0100"
+        # get_or_create should still deduplicate
+        assert (
+            restored.get_or_create("PHONE_NUMBER_123", "555-0100").token
+            == "<PHONE_NUMBER_123_1>"
+        )
+
+    def test_to_dict_is_json_serializable(self, store):
+        """Values with special JSON chars must survive a full JSON roundtrip."""
+        store.get_or_create("PERSON", 'Alice "Smith" <hey>')
+        store.get_or_create("EMAIL", "a\nb@c.com")
+        import json
+
+        raw = json.dumps(store.to_dict())
+        loaded = json.loads(raw)
+        restored = PIIStore.from_dict(loaded)
+        assert restored.original("<PERSON_1>") == 'Alice "Smith" <hey>'
+        assert restored.original("<EMAIL_1>") == "a\nb@c.com"
+
+    def test_from_dict_skips_malformed_tokens(self):
+        """Malformed tokens survive in _reverse for unmasking, but have no
+        forward entry so get_or_create won't deduplicate against them."""
+        data = {
+            "reverse": {
+                "<PERSON_1>": "alice",
+                "not_a_token": "bob",
+                "": "empty",
+                "<BAD": "bad",
+            },
+            "counters": {"PERSON": 2},
+        }
+        restored = PIIStore.from_dict(data)
+        # All reverse entries survive (needed for unmasking)
+        assert restored.original("<PERSON_1>") == "alice"
+        assert restored.original("not_a_token") == "bob"
+        # Valid token still deduplicates via forward map
+        assert restored.get_or_create("PERSON", "alice").token == "<PERSON_1>"
+
+    def test_from_dict_missing_reverse_raises(self):
+        with pytest.raises(KeyError):
+            PIIStore.from_dict({"counters": {"PERSON": 1}})
+
+    def test_from_dict_missing_counters_raises(self):
+        with pytest.raises(KeyError):
+            PIIStore.from_dict({"reverse": {"<PERSON_1>": "alice"}})
+
+    def test_save_and_load_file_roundtrip(self, store, tmp_path):
+        store.get_or_create("PERSON", "Alice Smith")
+        store.get_or_create("EMAIL", "alice@example.com")
+        items_before = store.items()
+        path = tmp_path / "store.json"
+        store.save(str(path))
+        assert path.exists()
+        restored = PIIStore.load(str(path))
+        assert restored.items() == items_before
+
+    def test_save_cleans_up_tmp_file(self, store, tmp_path):
+        store.get_or_create("PERSON", "Alice")
+        path = tmp_path / "store.json"
+        store.save(str(path))
+        assert not (tmp_path / "store.json.tmp").exists()
+
+    def test_save_is_idempotent(self, store, tmp_path):
+        """Saving twice in a row should not raise (atomic replace)."""
+        path = tmp_path / "store.json"
+        store.save(str(path))
+        store.save(str(path))  # second write
+
+    def test_load_nonexistent_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            PIIStore.load(str(tmp_path / "nope.json"))
+
+    def test_load_invalid_json_raises(self, tmp_path):
+        path = tmp_path / "store.json"
+        path.write_text("not json")
+        with pytest.raises(ValueError, match=".*store.json.*"):
+            PIIStore.load(str(path))
+
+    def test_save_duplicate_entries(self, store, tmp_path):
+        """Entity seen before deserialization still deduplicates."""
+        store.get_or_create("PERSON", "Alice")
+        path = tmp_path / "store.json"
+        store.save(str(path))
+        # Add more entries
+        store.get_or_create("EMAIL", "a@b.com")
+        store.save(str(path))
+        restored = PIIStore.load(str(path))
+        assert len(restored) == 2
+        assert restored.original("<PERSON_1>") == "Alice"
+        assert restored.original("<EMAIL_1>") == "a@b.com"

@@ -14,6 +14,7 @@ Client auth headers are forwarded verbatim and never stored.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -34,6 +35,7 @@ from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.capture import Capturer
 from anon_proxy.config import Config, load_config
+from anon_proxy.mapping import PIIStore
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import PrivacyFilter
 from anon_proxy.regex_detector import RegexDetector
@@ -245,6 +247,7 @@ def build_app(
     metrics: bool = False,
     capture: Capturer | None = None,
     system_inject: bool = True,
+    store_path: str | None = None,
 ) -> Starlette:
     """Build the Starlette application.
 
@@ -273,6 +276,7 @@ def build_app(
             app.state.capture = capture
             app.state.upstreams = all_upstreams
             app.state.system_inject = system_inject
+            app.state.store_path = store_path
             try:
                 yield
             finally:
@@ -466,6 +470,7 @@ async def _handle_proxy(
                         yield out
                     if calls is not None:
                         stream_calls = list(calls)
+                await _maybe_save_store(request.app.state, store_before)
             finally:
                 if debug:
                     _log_stream_substitutions(substitutions)
@@ -565,6 +570,7 @@ async def _handle_proxy(
                         },
                     }
                 )
+            await _maybe_save_store(request.app.state, store_before)
             return Response(
                 content=json.dumps(unmasked),
                 status_code=upstream_resp.status_code,
@@ -582,6 +588,35 @@ async def _handle_proxy(
         headers=_filter_response_headers(upstream_resp.headers),
         media_type=content_type or None,
     )
+
+
+def _write_store_json(path: str, data: dict) -> None:
+    """Atomically write serialized store data to *path*.
+
+    Runs in a thread pool — *data* is a snapshot captured on the event loop,
+    so concurrent store mutations during the write are harmless.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+async def _maybe_save_store(app_state, store_before: int) -> None:
+    """Write the PII store to disk if it was modified this request.
+
+    I/O is offloaded to a thread so the event loop is never blocked.
+    """
+    store_path: str | None = getattr(app_state, "store_path", None)
+    if store_path is None:
+        return
+    masker: Masker = app_state.masker
+    if len(masker.store) > store_before:
+        data = masker.store.to_dict()
+        try:
+            await asyncio.to_thread(_write_store_json, store_path, data)
+        except OSError as e:
+            print(f"error: failed to save PII store: {e}", file=sys.stderr)
 
 
 def _should_mask_request(path: str, body: dict) -> bool:
@@ -709,6 +744,14 @@ def main() -> None:
         "plus timing breakdown) to PATH. WARNING: contains UNMASKED PII.",
     )
     parser.add_argument(
+        "--store",
+        default=os.environ.get("ANON_PROXY_STORE"),
+        metavar="PATH",
+        help="Persistent PII mapping store. Loaded at startup; saved after each "
+        "request that adds new entries. Enables cross-restart consistency of "
+        "placeholder tokens.",
+    )
+    parser.add_argument(
         "--config",
         default=os.environ.get("ANON_PROXY_CONFIG"),
         metavar="PATH",
@@ -794,11 +837,34 @@ def main() -> None:
             device=device,
         )
 
+    # Load persistent PII store if requested.
+    store_path: str | None = args.store
+    if store_path:
+        try:
+            store = PIIStore.load(store_path)
+            print(
+                f"  store: loaded {len(store)} entries from {store_path}",
+                file=sys.stderr,
+            )
+        except FileNotFoundError:
+            store = PIIStore()
+            print(f"  store: {store_path} not found, starting fresh", file=sys.stderr)
+        except (OSError, ValueError) as e:
+            print(
+                f"error: cannot load PII store from {store_path}: {e}", file=sys.stderr
+            )
+            sys.exit(2)
+    else:
+        store = None
+
     masker = (
         Masker(
-            filter=pf, extra_detectors=extra_detectors, ignore_labels=cfg.ignore_labels
+            filter=pf,
+            store=store,
+            extra_detectors=extra_detectors,
+            ignore_labels=cfg.ignore_labels,
         )
-        if (pf is not None or extra_detectors or cfg.ignore_labels)
+        if (store is not None or pf is not None or extra_detectors or cfg.ignore_labels)
         else None
     )
 
@@ -825,6 +891,7 @@ def main() -> None:
         metrics=args.metrics,
         capture=capturer,
         system_inject=system_inject,
+        store_path=store_path,
     )
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
@@ -835,6 +902,7 @@ def main() -> None:
         f"  debug: {args.debug}\n"
         f"  metrics: {args.metrics}\n"
         f"  capture: {args.capture or '(off)'}\n"
+        f"  store: {args.store or '(none)'}\n"
         f"  config: {args.config or '(None)'}\n"
         f"  system_inject: {system_inject}\n"
         f"  backend: {backend_display}\n"
