@@ -18,6 +18,7 @@
 #   env:
 #     - { name: ANON_PROXY_METRICS, value: "true" }
 #     - { name: ANON_PROXY_CAPTURE, value: "/data/capture.jsonl" }   # optional; UNMASKED PII
+#     - { name: ANON_PROXY_STORE,   value: "/data/pii_store.json" }  # default in the image; overridable
 #
 # /config and /data are wired up by /docker-entrypoint.sh — you only need to
 # set the env vars you want.

@@ -214,7 +214,7 @@ docker run --rm -p 8080:8080 -v anon-proxy-models:/models anon-proxy:latest
 |---|---|
 | `/config` | Read-only. Drop in `config.json`; the entrypoint auto-discovers it. |
 | `/models` | Read-write. `HF_HOME` — privacy-filter weights live here. Persist this. |
-| `/data`   | Read-write. Destination for `capture.jsonl` and other runtime output. |
+| `/data`   | Read-write. Destination for `capture.jsonl`, `pii_store.json`, and other runtime output. |
 
 **Configuration:** every CLI flag also reads from an `ANON_PROXY_*` env var (`-e ANON_PROXY_DEBUG=true`, `-e ANON_PROXY_BACKEND=cpu`, etc.). Any extra args after the image name are forwarded to the server.
 
