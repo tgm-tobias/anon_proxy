@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import os
+import random
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -225,6 +226,63 @@ async def _timed_aiter(
         yield chunk
 
 
+def _parse_retry_after(headers) -> float | None:
+    """Parse Retry-After header value in seconds, or None if absent/unparseable."""
+    val = headers.get("retry-after") or headers.get("Retry-After")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
+async def _upstream_request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    content: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    params: dict | None = None,
+    stream: bool = False,
+    max_retries: int = 3,
+) -> httpx.Response:
+    """Send an upstream request, retrying on 429.
+
+    If the upstream returns 429 and retries remain: reads the Retry-After header
+    and waits that many seconds; falls back to exponential backoff with jitter
+    (base 1s, doubled per retry) when the header is absent. Each retry attempt
+    prints a line to stderr.
+
+    Gives up after *max_retries* consecutive 429s and returns the final 429
+    response to the caller.
+    """
+    for attempt in range(max_retries + 1):
+        req = client.build_request(
+            method, url, content=content, headers=headers, params=params
+        )
+        resp = await client.send(req, stream=stream)
+        if resp.status_code != 429 or attempt == max_retries:
+            return resp
+
+        retry_after = _parse_retry_after(resp.headers)
+        if retry_after is None:
+            retry_after = (2**attempt) * (0.5 + random.random() * 0.5)
+
+        print(
+            f"  upstream 429 (retry {attempt + 1}/{max_retries}), "
+            f"waiting {retry_after:.1f}s",
+            file=sys.stderr,
+        )
+        if stream:
+            await resp.aread()
+        await resp.aclose()
+        await asyncio.sleep(retry_after)
+
+    raise RuntimeError("_upstream_request: exhausted retries")  # unreachable
+
+
 _SKIP_REQUEST_HEADERS = {
     "host",
     "content-length",
@@ -416,15 +474,16 @@ async def _handle_proxy(
     is_streaming = bool(_get_streaming_flag(body))
 
     if is_streaming:
-        req = client.build_request(
+        t_send = time.perf_counter()
+        upstream_resp = await _upstream_request(
+            client,
             request.method,
             upstream_url,
             content=masked_bytes,
             headers=upstream_headers,
             params=params,
+            stream=True,
         )
-        t_send = time.perf_counter()
-        upstream_resp = await client.send(req, stream=True)
         upstream_acc[0] += time.perf_counter() - t_send
 
         if upstream_resp.status_code >= 400:
@@ -520,7 +579,8 @@ async def _handle_proxy(
 
     # Non-streaming response
     t_req = time.perf_counter()
-    upstream_resp = await client.request(
+    upstream_resp = await _upstream_request(
+        client,
         request.method,
         upstream_url,
         content=masked_bytes,
@@ -625,8 +685,12 @@ def _should_mask_request(path: str, body: dict) -> bool:
     Requests that should be masked contain user-generated content:
     - Anthropic: POST /v1/messages
     - OpenAI: POST /v1/chat/completions, /v1/completions
+
+    Metadata endpoints like count_tokens are fast-tracked — they carry the
+    same fields but don't generate output, so masking is wasted work.
     """
-    # Check for common completion endpoints
+    if "count_tokens" in path:
+        return False
     if path in ("/v1/messages", "/chat/completions"):
         return True
 
@@ -647,7 +711,8 @@ async def _passthrough(
     client: httpx.AsyncClient = request.app.state.client
     body = body_override if body_override is not None else await request.body()
 
-    upstream_resp = await client.request(
+    upstream_resp = await _upstream_request(
+        client,
         request.method,
         upstream_url,
         content=body,
