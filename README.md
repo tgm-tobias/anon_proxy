@@ -285,7 +285,7 @@ With `--debug`, each request prints a compact diff to stderr:
 [unmasked stream] 'I'll fix the bug for <PERSON_1>…' → 'I'll fix the bug for Alice Smith…'
 ```
 
-**What gets protected:** every user and assistant message turn — text content, tool call inputs (`tool_use.input`), and tool results (`tool_result.content`). File contents, shell output, names, emails, paths containing PII are all masked before leaving your machine.
+**What gets protected:** every user and assistant message turn — text content, tool call inputs (`tool_use.input`), tool results (`tool_result.content`), and Claude Code system-reminder blocks. File contents, shell output, names, emails, paths containing PII are all masked before leaving your machine.
 
 **What is NOT masked:** the system prompt (tool schemas and static instructions), tool definitions, and extended-thinking blocks (signatures would break). See [`SECURITY.md`](SECURITY.md) for the full threat model and known limitations.
 

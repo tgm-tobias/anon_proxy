@@ -180,24 +180,18 @@ class TestParseRetryAfter:
 class TestShouldMaskRequest:
     """Pure function: decides whether a request needs PII masking."""
 
-    def test_count_tokens_path_returns_false(self):
-        assert (
-            _should_mask_request("v1/messages/count_tokens", {"messages": []}) is False
-        )
+    def test_count_tokens_with_messages_is_masked(self):
+        # count_tokens carries the full conversation history; the bytes leave
+        # the box, so it must be masked like /v1/messages itself.
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        assert _should_mask_request("/v1/messages/count_tokens", body) is True
 
-    def test_count_tokens_with_provider_prefix(self):
-        assert (
-            _should_mask_request(
-                "/anthropic/v1/messages/count_tokens", {"messages": []}
-            )
-            is False
-        )
+    def test_count_tokens_with_provider_prefix_is_masked(self):
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        assert _should_mask_request("/anthropic/v1/messages/count_tokens", body) is True
 
-    def test_count_tokens_with_messages_body_skipped(self):
-        """Path check wins — even a body with PII fields is skipped."""
-        assert (
-            _should_mask_request("/v1/messages/count_tokens", {"messages": []}) is False
-        )
+    def test_count_tokens_without_pii_fields_not_masked(self):
+        assert _should_mask_request("/v1/messages/count_tokens", {}) is False
 
     def test_messages_endpoint(self):
         assert _should_mask_request("/v1/messages", {"model": "sonnet"}) is True

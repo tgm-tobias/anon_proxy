@@ -686,11 +686,10 @@ def _should_mask_request(path: str, body: dict) -> bool:
     - Anthropic: POST /v1/messages
     - OpenAI: POST /v1/chat/completions, /v1/completions
 
-    Metadata endpoints like count_tokens are fast-tracked — they carry the
-    same fields but don't generate output, so masking is wasted work.
+    count_tokens carries full message history, so it is masked when the body
+    has PII-bearing fields. Repeated history is cheap because block-cache hits
+    avoid re-walking already-seen message objects.
     """
-    if "count_tokens" in path:
-        return False
     if path in ("/v1/messages", "/chat/completions"):
         return True
 

@@ -416,25 +416,31 @@ class TestPlaceholderDefenseInMask:
 
 
 class TestSkipPatternsDefault:
-    def test_system_reminder_block_skipped(self, make_filter, fake_pipeline, store):
-        # Reach for the default skip patterns (skip_patterns=None) — the test
-        # helper defangs them by default, so this test uses Masker directly.
+    def test_system_reminder_text_is_masked_by_default(
+        self, make_filter, fake_pipeline, store
+    ):
         from anon_proxy.masker import Masker
 
         m = Masker(filter=make_filter(), store=store)  # default skip_patterns
-        text = "<system-reminder>some content</system-reminder>"
-        assert m.mask(text) == text
-        assert fake_pipeline.calls == []  # neither pass ran
+        text = "<system-reminder>\n# userEmail\nalice@example.com\n</system-reminder>"
+        fake_pipeline.set(
+            text,
+            [span("private_email", 30, 47, word="alice@example.com")],
+        )
+        masked = m.mask(text)
+        assert "alice@example.com" not in masked
+        assert "<EMAIL_1>" in masked
 
-    def test_system_reminder_with_leading_whitespace_still_skips(
+    def test_indented_system_reminder_also_masked(
         self, make_filter, fake_pipeline, store
     ):
         from anon_proxy.masker import Masker
 
         m = Masker(filter=make_filter(), store=store)
         text = "   <system-reminder>x</system-reminder>"
+        fake_pipeline.set(text, [])
         assert m.mask(text) == text
-        assert fake_pipeline.calls == []
+        assert fake_pipeline.calls == [text]
 
 
 class TestSkipPatternsCustom:
@@ -467,7 +473,7 @@ class TestSkipPatternsCustom:
 
 
 class TestSkipPatternsNotCached:
-    """Skip-matched text returns input directly; subsequent calls re-evaluate
+    """Explicit skip patterns return input directly; subsequent calls re-evaluate
     the skip pattern rather than returning a cached result."""
 
     def test_repeated_skip_calls_do_not_invoke_pipeline(
@@ -475,8 +481,12 @@ class TestSkipPatternsNotCached:
     ):
         from anon_proxy.masker import Masker
 
-        m = Masker(filter=make_filter(), store=store)
-        text = "<system-reminder>x</system-reminder>"
+        m = Masker(
+            filter=make_filter(),
+            store=store,
+            skip_patterns=[re.compile(r"^IGNORE:")],
+        )
+        text = "IGNORE: do not mask Alice"
         for _ in range(3):
             assert m.mask(text) == text
         assert fake_pipeline.calls == []
@@ -658,6 +668,41 @@ class TestUnmaskUnknownTokensPassThrough:
     def test_non_token_text_unaffected(self, make_filter, store):
         m = _masker_with_known_tokens(make_filter, store, ("PERSON", "Alice"))
         assert m.unmask("plain text no tokens") == "plain text no tokens"
+
+
+class TestUnknownPlaceholderDetection:
+    def test_unknown_token_warns_and_passes_through(self, make_masker, store, capsys):
+        m = make_masker()
+        store.get_or_create("PERSON", "Alice")
+        out = m.unmask("run ls -<PERSON_186> for <PERSON_1>")
+        assert out == "run ls -<PERSON_186> for Alice"
+        err = capsys.readouterr().err
+        assert "<PERSON_186>" in err
+        assert "unknown placeholder" in err
+
+    def test_known_tokens_do_not_warn(self, make_masker, store, capsys):
+        m = make_masker()
+        store.get_or_create("PERSON", "Alice")
+        m.unmask("hi <PERSON_1>")
+        assert "unknown placeholder" not in capsys.readouterr().err
+
+    def test_each_distinct_unknown_token_warns_once(self, make_masker, capsys):
+        m = make_masker()
+        m.unmask("<PERSON_186> <PERSON_186> <EMAIL_99>")
+        err = capsys.readouterr().err
+        assert err.count("unknown placeholder") == 2
+        assert "<PERSON_186>" in err
+        assert "<EMAIL_99>" in err
+
+    def test_telemetry_counts_unknown_tokens(self, make_masker, store):
+        from anon_proxy.masker import telemetry_scope
+
+        m = make_masker()
+        store.get_or_create("PERSON", "Alice")
+        with telemetry_scope() as calls:
+            m.unmask("<PERSON_186> and <EMAIL_99>")
+        unmask_calls = [c for c in calls if c["op"] == "unmask"]
+        assert unmask_calls[0]["unknown_tokens"] == 2
 
 
 class TestUnmaskJson:

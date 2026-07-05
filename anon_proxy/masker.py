@@ -3,6 +3,7 @@ import contextvars
 import hashlib
 import json
 import re
+import sys
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Iterable, Protocol
@@ -37,13 +38,12 @@ class Detector(Protocol):
     def detect(self, text: str) -> list[PIIEntity]: ...
 
 
-# Patterns for content that should never be masked (non-user PII content)
-_SKIP_MASK_PATTERNS = [
-    # Claude Code system-reminder blocks - contain tool definitions, skills list, etc.
-    re.compile(r"^\s*<system-reminder>", re.MULTILINE),
-    # Tool result blocks that are purely structural (e.g., file listings, tool outputs)
-    # These can be extended as needed
-]
+# No default skip patterns. Skipping content by pattern is a fail-open hole:
+# Claude Code's <system-reminder> blocks carry real PII (userEmail, CLAUDE.md)
+# and reminder lines get appended to tool results, exempting whole file reads.
+# Perf for repeated boilerplate comes from the block/content caches instead.
+# `skip_patterns` remains as an explicit opt-in for callers who accept the risk.
+_SKIP_MASK_PATTERNS: list[re.Pattern] = []
 
 # Matches placeholder tokens emitted by PIIStore (see mapping.py: f"<{LABEL}_{N}>").
 _PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
@@ -66,7 +66,7 @@ class Masker:
     - LRU caches detection results by content hash to avoid re-scanning identical text
     - LRU caches masked block-shaped objects by content hash so repeated message
       blocks (the common shape of conversation history) skip re-walking entirely
-    - Skips masking for known non-PII patterns (e.g., system-reminders)
+    - Optional explicit skip_patterns can bypass masking for caller-owned content
     """
 
     def __init__(
@@ -254,6 +254,7 @@ class Masker:
                     "op": "unmask",
                     "chars": len(text),
                     "ms": (time.perf_counter() - t0) * 1000,
+                    "unknown_tokens": self._last_unknown_count,
                 }
             )
         return result
@@ -275,6 +276,7 @@ class Masker:
                     "op": "unmask_json",
                     "chars": len(text),
                     "ms": (time.perf_counter() - t0) * 1000,
+                    "unknown_tokens": self._last_unknown_count,
                 }
             )
         return result
@@ -282,18 +284,37 @@ class Masker:
     def _sub(self, text: str, transform: Callable[[str], str]) -> str:
         """Substitute placeholder tokens with their original values."""
         tokens = self._store.tokens()
-        if not tokens:
-            return text
-        # Longest-first so "<PERSON_1>" can't shadow "<PERSON_10>".
-        pattern = re.compile(
-            "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
-        )
+        result = text
+        if tokens:
+            # Longest-first so "<PERSON_1>" can't shadow "<PERSON_10>".
+            pattern = re.compile(
+                "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
+            )
 
-        def repl(m: re.Match[str]) -> str:
-            original = self._store.original(m.group(0))
-            return transform(original) if original is not None else m.group(0)
+            def repl(m: re.Match[str]) -> str:
+                original = self._store.original(m.group(0))
+                return transform(original) if original is not None else m.group(0)
 
-        return pattern.sub(repl, text)
+            result = pattern.sub(repl, text)
+
+        unknown = self._find_unknown_tokens(result)
+        for token in unknown:
+            print(
+                f"warning: unmask: unknown placeholder {token} left in response "
+                f"(model may have invented it)",
+                file=sys.stderr,
+            )
+        self._last_unknown_count = len(unknown)
+        return result
+
+    def _find_unknown_tokens(self, text: str) -> list[str]:
+        """Return distinct placeholder-shaped tokens with no store entry."""
+        unknown: list[str] = []
+        for match in _PLACEHOLDER_RE.finditer(text):
+            token = match.group(0)
+            if self._store.original(token) is None and token not in unknown:
+                unknown.append(token)
+        return unknown
 
 
 def _drop_placeholder_overlaps(entities: list[PIIEntity], text: str) -> list[PIIEntity]:
