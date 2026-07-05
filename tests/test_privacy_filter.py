@@ -257,13 +257,31 @@ class TestDetectChunking:
             (12, 15, "foo"),
         ]
 
-    def test_pipeline_called_once_per_chunk(self, make_filter, fake_pipeline):
+    def test_multichunk_text_is_one_batched_pipeline_call(
+        self, make_filter, fake_pipeline
+    ):
         text = "hello world foo"
         f = make_filter(chunk_size=10)
         f.detect(text)
-        # Two chunks → two pipeline calls (each with a str arg).
-        assert len(fake_pipeline.calls) == 2
-        assert all(isinstance(c, str) for c in fake_pipeline.calls)
+        assert len(fake_pipeline.calls) == 1
+        assert isinstance(fake_pipeline.calls[0], list)
+        assert "".join(fake_pipeline.calls[0]) == text
+
+    def test_batched_multichunk_offsets_shift_by_chunk_start(
+        self, make_filter, fake_pipeline
+    ):
+        text = "aaaa bbbb cccc dddd"
+        f = make_filter(chunk_size=10)
+        chunks = _split_chunks(text, 10)
+        assert len(chunks) > 1
+        second_offset, second_chunk = chunks[1]
+        fake_pipeline.set(second_chunk, [span("PERSON", 0, 4, score=0.9)])
+
+        [entity] = f.detect(text)
+
+        assert entity.text == second_chunk[:4]
+        assert entity.start == second_offset
+        assert entity.end == second_offset + 4
 
     def test_cross_chunk_adjacency_merge(self, make_filter, fake_pipeline):
         # chunk_size=7, text="Alice Smith":

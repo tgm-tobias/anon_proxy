@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 
 
@@ -18,44 +19,50 @@ class PIIStore:
     maps to the same token for the life of this store. The reverse map preserves
     the first-seen original form so un-masking restores the user's casing.
 
-    Not thread-safe — instances are expected to be used sequentially within a
-    single request or conversation.
+    Thread-safe: a reentrant lock guards the maps and counters so request
+    masking can run in worker threads while response unmasking stays inline.
     """
 
     def __init__(self) -> None:
         self._forward: dict[tuple[str, str], Placeholder] = {}
         self._reverse: dict[str, str] = {}
         self._counters: dict[str, int] = {}
+        self._lock = threading.RLock()
 
     def get_or_create(self, label: str, value: str) -> Placeholder:
         if not value or not value.strip():
             raise ValueError(
                 "PIIStore.get_or_create: value must be non-empty after stripping whitespace"
-            )
+        )
         normalized_label = normalize_label(label)
         key = (normalized_label, _canonical(value))
-        existing = self._forward.get(key)
-        if existing is not None:
-            return existing
-        index = self._counters.get(normalized_label, 0) + 1
-        self._counters[normalized_label] = index
-        token = f"<{normalized_label}_{index}>"
-        ph = Placeholder(label=normalized_label, index=index, token=token)
-        self._forward[key] = ph
-        self._reverse[token] = value
-        return ph
+        with self._lock:
+            existing = self._forward.get(key)
+            if existing is not None:
+                return existing
+            index = self._counters.get(normalized_label, 0) + 1
+            self._counters[normalized_label] = index
+            token = f"<{normalized_label}_{index}>"
+            ph = Placeholder(label=normalized_label, index=index, token=token)
+            self._forward[key] = ph
+            self._reverse[token] = value
+            return ph
 
     def original(self, token: str) -> str | None:
-        return self._reverse.get(token)
+        with self._lock:
+            return self._reverse.get(token)
 
     def tokens(self) -> list[str]:
-        return list(self._reverse.keys())
+        with self._lock:
+            return list(self._reverse.keys())
 
     def items(self) -> list[tuple[str, str]]:
-        return list(self._reverse.items())
+        with self._lock:
+            return list(self._reverse.items())
 
     def __len__(self) -> int:
-        return len(self._reverse)
+        with self._lock:
+            return len(self._reverse)
 
     # ---- serialization --------------------------------------------------
 
@@ -68,10 +75,11 @@ class PIIStore:
 
         The forward map is reconstructed on deserialization.
         """
-        return {
-            "reverse": dict(self._reverse),
-            "counters": dict(self._counters),
-        }
+        with self._lock:
+            return {
+                "reverse": dict(self._reverse),
+                "counters": dict(self._counters),
+            }
 
     @classmethod
     def from_dict(cls, data: dict) -> "PIIStore":
@@ -81,6 +89,8 @@ class PIIStore:
         round-trip preserves all mappings.
         """
         store = cls()
+        # The fresh store is not published yet, so direct population does not
+        # need to acquire its lock.
         store._reverse = dict(data["reverse"])
         store._counters = dict(data["counters"])
         for token, original in store._reverse.items():

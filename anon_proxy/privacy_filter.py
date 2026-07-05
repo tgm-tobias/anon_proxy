@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass
 
 from transformers import pipeline
@@ -28,6 +29,8 @@ DEFAULT_MERGE_GAP_ALLOWED: dict[str, str] = {
     "LOCATION": " \t\n,.-",
 }
 
+DEFAULT_CHUNK_SIZE = 6000
+
 
 class PrivacyFilter:
     """Thin wrapper around the openai/privacy-filter token classifier.
@@ -47,11 +50,11 @@ class PrivacyFilter:
     merge across an empty gap.
 
     Long texts are split into overlapping-free chunks of at most `chunk_size`
-    characters (default 1500, ~375 English tokens — safely within BERT's 512
-    token limit). Splits happen at the last whitespace before the boundary so
-    words are never bisected. Entity spans from adjacent chunks are combined
-    before the adjacency-merge pass, so entities that straddle a chunk boundary
-    are still collapsed into a single placeholder.
+    characters (default 6000, roughly 1500 English tokens). Splits happen at
+    the last whitespace before the boundary so words are never bisected.
+    Chunks are submitted to the pipeline as one batch. Entity spans from
+    adjacent chunks are combined before the adjacency-merge pass, so entities
+    that straddle a chunk boundary are still collapsed into a single placeholder.
     """
 
     MODEL_ID = "openai/privacy-filter"
@@ -62,7 +65,8 @@ class PrivacyFilter:
         aggregation_strategy: str = "simple",
         merge_adjacent: bool = True,
         merge_gap_allowed: dict[str, str] | None = None,
-        chunk_size: int = 1500,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        batch_size: int = 8,
         device: int | str | None = None,
     ) -> None:
         self._pipe = pipeline(
@@ -77,14 +81,19 @@ class PrivacyFilter:
             label: frozenset(chars) for label, chars in merged_policy.items()
         }
         self._chunk_size = chunk_size
+        self._batch_size = batch_size
+        self._infer_lock = threading.Lock()
 
     def detect(self, text: str) -> list[PIIEntity]:
         if not text.strip():
             return []
         chunks = _split_chunks(text, self._chunk_size)
+        texts = [chunk for _, chunk in chunks]
+        with self._infer_lock:
+            all_results = self._pipe(texts, batch_size=self._batch_size)
         entities: list[PIIEntity] = []
-        for offset, chunk in chunks:
-            for r in self._pipe(chunk):
+        for (offset, chunk), results in zip(chunks, all_results):
+            for r in results:
                 e = _to_entity(r, chunk)
                 if e is None:
                     continue
@@ -103,7 +112,8 @@ class PrivacyFilter:
 
     def detect_raw(self, text: str) -> list[dict]:
         """Return the pipeline's untouched per-span dicts for debugging."""
-        return list(self._pipe(text))
+        with self._infer_lock:
+            return list(self._pipe(text))
 
 
 def _split_chunks(text: str, max_chars: int) -> list[tuple[int, str]]:

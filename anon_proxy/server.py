@@ -37,7 +37,7 @@ from anon_proxy.capture import Capturer
 from anon_proxy.config import Config, load_config
 from anon_proxy.mapping import PIIStore
 from anon_proxy.masker import Masker, telemetry_scope
-from anon_proxy.privacy_filter import PrivacyFilter
+from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
 from anon_proxy.regex_detector import RegexDetector
 from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
@@ -447,11 +447,11 @@ async def _handle_proxy(
     if capture is not None:
         with telemetry_scope() as calls:
             t_mask = time.perf_counter()
-            masked = adapter.mask_request(body, masker)
+            masked = await asyncio.to_thread(adapter.mask_request, body, masker)
             mask_request_ms = (time.perf_counter() - t_mask) * 1000
             mask_calls = list(calls)
     else:
-        masked = adapter.mask_request(body, masker)
+        masked = await asyncio.to_thread(adapter.mask_request, body, masker)
     if debug:
         new_entries = masker.store.items()[store_before:]
         _log_request(upstream_config.name, api_path, body, masked, new_entries)
@@ -834,10 +834,17 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=int(os.environ.get("ANON_PROXY_CHUNK_SIZE", "1500")),
+        default=int(os.environ.get("ANON_PROXY_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE))),
         metavar="N",
-        help="Max characters per chunk fed to the model (default: 1500). "
+        help=f"Max characters per chunk fed to the model (default: {DEFAULT_CHUNK_SIZE}). "
         "Lower values reduce peak GPU memory at the cost of more forward passes.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=int(os.environ.get("ANON_PROXY_BATCH_SIZE", "8")),
+        metavar="N",
+        help="Batch size for model inference over chunks (default: 8).",
     )
     parser.add_argument(
         "--backend",
@@ -900,11 +907,17 @@ def main() -> None:
             sys.exit(2)
 
     pf: PrivacyFilter | None = None
-    if cfg.merge_gap or args.chunk_size != 1500 or args.backend != "auto":
+    if (
+        cfg.merge_gap
+        or args.chunk_size != DEFAULT_CHUNK_SIZE
+        or args.batch_size != 8
+        or args.backend != "auto"
+    ):
         device = None if args.backend == "auto" else args.backend
         pf = PrivacyFilter(
             merge_gap_allowed=cfg.merge_gap or None,
             chunk_size=args.chunk_size,
+            batch_size=args.batch_size,
             device=device,
         )
 

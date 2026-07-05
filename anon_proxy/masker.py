@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sys
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Iterable, Protocol
@@ -47,6 +48,7 @@ _SKIP_MASK_PATTERNS: list[re.Pattern] = []
 
 # Matches placeholder tokens emitted by PIIStore (see mapping.py: f"<{LABEL}_{N}>").
 _PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
+_CACHE_MISS = object()
 
 
 class Masker:
@@ -88,6 +90,7 @@ class Masker:
             normalize_label(s) for s in (ignore_labels or ())
         )
         self._cache_size = cache_size
+        self._cache_lock = threading.RLock()
         # LRU cache: content_hash -> (entities, masked_text)
         self._cache: OrderedDict[str, tuple[list[PIIEntity], str]] = OrderedDict()
         # LRU cache: block_hash -> already-masked block-shaped object
@@ -123,8 +126,11 @@ class Masker:
 
         # Check cache
         content_hash = _hash_content(text)
-        if cached := self._cache.get(content_hash):
-            self._cache.move_to_end(content_hash)
+        with self._cache_lock:
+            cached = self._cache.get(content_hash)
+            if cached is not None:
+                self._cache.move_to_end(content_hash)
+        if cached is not None:
             if record is not None:
                 record.append(
                     {
@@ -162,6 +168,9 @@ class Masker:
         ml_entities = _resolve_overlaps(ml_entities)
         masked = self._substitute(intermediate, ml_entities)
 
+        # Detection may race for the same uncached text. That is harmless:
+        # PIIStore allocation is idempotent, and both threads write the same
+        # content-hash cache entry.
         self._cache_result(content_hash, regex_entities + ml_entities, masked)
         if record is not None:
             record.append(
@@ -178,10 +187,11 @@ class Masker:
         self, content_hash: str, entities: list[PIIEntity], masked: str
     ) -> None:
         """Cache a detection result with LRU eviction."""
-        self._cache[content_hash] = (entities, masked)
-        self._cache.move_to_end(content_hash)
-        while len(self._cache) > self._cache_size:
-            self._cache.popitem(last=False)
+        with self._cache_lock:
+            self._cache[content_hash] = (entities, masked)
+            self._cache.move_to_end(content_hash)
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
 
     def _substitute(self, text: str, entities: list[PIIEntity]) -> str:
         """Replace entities with placeholder tokens.
@@ -217,9 +227,11 @@ class Masker:
             return walker(obj)
         record = _TELEMETRY.get()
         t0 = time.perf_counter() if record is not None else 0.0
-        if key in self._block_cache:
-            self._block_cache.move_to_end(key)
-            cached = self._block_cache[key]
+        with self._cache_lock:
+            cached = self._block_cache.get(key, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
+                self._block_cache.move_to_end(key)
+        if cached is not _CACHE_MISS:
             if record is not None:
                 record.append(
                     {
@@ -230,10 +242,11 @@ class Masker:
                 )
             return cached
         result = walker(obj)
-        self._block_cache[key] = result
-        self._block_cache.move_to_end(key)
-        while len(self._block_cache) > self._cache_size:
-            self._block_cache.popitem(last=False)
+        with self._cache_lock:
+            self._block_cache[key] = result
+            self._block_cache.move_to_end(key)
+            while len(self._block_cache) > self._cache_size:
+                self._block_cache.popitem(last=False)
         if record is not None:
             record.append(
                 {

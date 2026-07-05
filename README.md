@@ -115,7 +115,8 @@ uv run python -m anon_proxy.server [options]
 | `--store <file>` | — | Path to persistent PII mapping store. Loaded at startup; saved after each request with new entries. Enables cross-restart placeholder consistency — see [Persistent store](#persistent-store) below. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
-| `--chunk-size <N>` | `1500` | Max chars per model inference pass — lower values reduce peak VRAM |
+| `--chunk-size <N>` | `6000` | Max chars per model inference chunk — lower values reduce peak VRAM |
+| `--batch-size <N>` | `8` | Batch size for model inference over chunks |
 | `--no-system-inject` | off | Disable the placeholder-explainer system prompt that the proxy prepends to outbound requests. Also settable via `system_inject: false` in `config.json`. |
 
 **Add a custom provider:**

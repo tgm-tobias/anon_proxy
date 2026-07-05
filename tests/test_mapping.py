@@ -18,6 +18,8 @@ Specs covered (agreed in Phase 2):
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from anon_proxy.mapping import PIIStore, Placeholder, normalize_label
@@ -87,6 +89,28 @@ class TestGetOrCreateBasics:
         b = store.get_or_create("PERSON", "Bob")
         assert (a.index, b.index) == (1, 2)
         assert (a.token, b.token) == ("<PERSON_1>", "<PERSON_2>")
+
+    def test_get_or_create_is_thread_safe(self):
+        store = PIIStore()
+        values = [f"person-{i % 50}" for i in range(1000)]
+
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            tokens = list(
+                ex.map(lambda v: store.get_or_create("PERSON", v).token, values)
+            )
+
+        by_value: dict[str, set[str]] = {}
+        for value, token in zip(values, tokens):
+            by_value.setdefault(value, set()).add(token)
+
+        assert all(len(ts) == 1 for ts in by_value.values())
+        assert len(store) == 50
+        indexes = sorted(
+            int(token.rstrip(">").rsplit("_", 1)[1])
+            for tokens_for_value in by_value.values()
+            for token in tokens_for_value
+        )
+        assert indexes == list(range(1, 51))
 
 
 class TestRepeatedReuse:

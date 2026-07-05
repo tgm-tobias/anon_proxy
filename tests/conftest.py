@@ -33,7 +33,7 @@ class FakePipeline:
     def set(self, text: str, spans: list[dict]) -> None:
         self._responses[text] = spans
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, **_kwargs):
         if isinstance(inputs, str):
             self.calls.append(inputs)
             return list(self._responses.get(inputs, []))
