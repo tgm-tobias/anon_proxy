@@ -33,7 +33,7 @@ class PIIStore:
         if not value or not value.strip():
             raise ValueError(
                 "PIIStore.get_or_create: value must be non-empty after stripping whitespace"
-        )
+            )
         normalized_label = normalize_label(label)
         key = (normalized_label, _canonical(value))
         with self._lock:

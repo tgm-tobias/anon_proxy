@@ -146,6 +146,7 @@ class TestMaybeSaveStore:
 # ====================================================================# _should_mask_request
 # ====================================================================
 
+
 class TestShouldMaskRequest:
     """Pure function: decides whether a request needs PII masking."""
 
@@ -193,6 +194,7 @@ class TestShouldMaskRequest:
 
 # ====================================================================# _upstream_request
 # ====================================================================
+
 
 def _mock_response(status_code=200, headers=None):
     """Build a minimal object shaped like an httpx.Response for mocking."""
@@ -307,15 +309,8 @@ class TestProxyMaskingConcurrency:
 
         assert r1.status_code == 200
         assert r2.status_code == 200
-        assert elapsed < 0.35, (
-            f"requests serialized on the event loop: {elapsed:.2f}s"
-        )
+        assert elapsed < 0.35, f"requests serialized on the event loop: {elapsed:.2f}s"
 
-    async def test_max_retries_parameter(self, mock_client):
-        """Custom max_retries limits the number of retries."""
-        client, ok = mock_client
-        err = _mock_response(429)
-        client.send.side_effect = [err, err, ok]
 
 class TestExtractUsage:
     def test_anthropic_usage(self):
