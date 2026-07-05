@@ -782,6 +782,66 @@ class TestAnthropicDecodeFailure:
         assert b"event: content_block_delta" in out
 
 
+@pytest.mark.asyncio
+class TestStreamingUsage:
+    async def test_anthropic_stream_reports_usage(self, make_filter, store):
+        m = _make_masker_with_tokens(make_filter, store)
+        chunks = [
+            _sse_event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 12,
+                            "cache_read_input_tokens": 300,
+                            "cache_creation_input_tokens": 0,
+                        }
+                    },
+                },
+            ),
+            _sse_event("message_stop", {"type": "message_stop"}),
+        ]
+        seen: list[dict] = []
+
+        async for _ in anth.transform_stream(_aiter(chunks), m, on_usage=seen.append):
+            pass
+
+        assert seen == [
+            {
+                "input_tokens": 12,
+                "cache_read_input_tokens": 300,
+                "cache_creation_input_tokens": 0,
+            }
+        ]
+
+    async def test_openai_stream_reports_usage(self, make_filter, store):
+        m = _make_masker_with_tokens(make_filter, store)
+        chunks = [
+            _oai_event(
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "prompt_tokens_details": {"cached_tokens": 300},
+                    },
+                }
+            ),
+            _oai_event("[DONE]"),
+        ]
+        seen: list[dict] = []
+
+        async for _ in oai.transform_stream(_aiter(chunks), m, on_usage=seen.append):
+            pass
+
+        assert seen == [
+            {
+                "prompt_tokens": 12,
+                "prompt_tokens_details": {"cached_tokens": 300},
+            }
+        ]
+
+
 class TestIsCompleteJson:
     """Pin the _is_complete_json helper that gates tool_call argument
     flushing in the OpenAI adapter. Falsy on invalid JSON, truthy on valid."""

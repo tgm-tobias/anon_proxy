@@ -151,6 +151,7 @@ async def transform_stream(
     masker: Masker,
     *,
     on_substitution: Callable[[str, str], None] | None = None,
+    on_usage: Callable[[dict], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an Anthropic SSE stream.
 
@@ -186,6 +187,7 @@ async def transform_stream(
                 masker,
                 blocks,
                 on_substitution,
+                on_usage,
             ):
                 yield _serialize_sse(out_event, out_data)
     if raw.strip():
@@ -226,6 +228,7 @@ def _transform_event(
     masker: Masker,
     blocks: dict[int, dict],
     on_substitution: Callable[[str, str], None] | None,
+    on_usage: Callable[[dict], None] | None,
 ):
     """Transform a single SSE event, unmasking content where needed.
 
@@ -245,6 +248,11 @@ def _transform_event(
     except json.JSONDecodeError:
         yield event_type, data_str
         return
+
+    if event_type == "message_start" and on_usage is not None:
+        usage = (data.get("message") or {}).get("usage")
+        if isinstance(usage, dict):
+            on_usage(usage)
 
     if event_type == "content_block_start":
         # A new content block is starting. Set up state for tracking deltas.

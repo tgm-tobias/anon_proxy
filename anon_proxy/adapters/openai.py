@@ -249,6 +249,7 @@ async def transform_stream(
     masker: Masker,
     *,
     on_substitution: Callable[[str, str], None] | None = None,
+    on_usage: Callable[[dict], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Unmask masked payloads in an OpenAI SSE stream.
 
@@ -294,6 +295,7 @@ async def transform_stream(
                 tool_call_buffers,
                 content_buffer,
                 on_substitution,
+                on_usage,
             ):
                 yield _serialize_sse(out_event, out_data)
 
@@ -346,6 +348,7 @@ def _transform_event(
     tool_call_buffers: dict[int, str],
     content_buffer: list[str],  # Changed to mutable list to allow modification
     on_substitution: Callable[[str, str], None] | None,
+    on_usage: Callable[[dict], None] | None,
 ):
     """Transform a single SSE event.
 
@@ -363,6 +366,10 @@ def _transform_event(
     except json.JSONDecodeError:
         yield event_type, data_str
         return
+
+    usage = data.get("usage")
+    if isinstance(usage, dict) and on_usage is not None:
+        on_usage(usage)
 
     choices = data.get("choices", [])
     if not isinstance(choices, list):

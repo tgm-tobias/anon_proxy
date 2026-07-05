@@ -18,7 +18,6 @@ import asyncio
 import contextlib
 import json
 import os
-import random
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -190,14 +189,46 @@ def _log_stream_substitutions(substitutions: dict[str, str]) -> None:
     sys.stderr.flush()
 
 
-def _log_metrics(provider: str, e2e: float, upstream: float) -> None:
+def _extract_usage(resp_json: dict) -> dict | None:
+    """Normalize Anthropic/OpenAI usage blocks for the metrics line."""
+    usage = resp_json.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    if "input_tokens" in usage:
+        return {
+            "input": usage.get("input_tokens", 0),
+            "cache_read": usage.get("cache_read_input_tokens", 0),
+            "cache_creation": usage.get("cache_creation_input_tokens", 0),
+        }
+    if "prompt_tokens" in usage:
+        details = usage.get("prompt_tokens_details") or {}
+        return {
+            "input": usage.get("prompt_tokens", 0),
+            "cache_read": details.get("cached_tokens", 0),
+            "cache_creation": 0,
+        }
+    return None
+
+
+def _log_metrics(
+    provider: str,
+    e2e: float,
+    upstream: float,
+    usage: dict | None = None,
+) -> None:
     """Print per-turn latency breakdown to stderr."""
     proxy = max(e2e - upstream, 0.0)
     pct = (proxy / e2e * 100.0) if e2e > 0 else 0.0
+    token_part = ""
+    if usage is not None:
+        token_part = (
+            f"  tokens: in={usage['input']} cache_read={usage['cache_read']} "
+            f"cache_create={usage['cache_creation']}"
+        )
     print(
         f"{_MAGENTA}[metrics {provider}]{_RESET} "
         f"e2e={e2e * 1000:.1f}ms  upstream={upstream * 1000:.1f}ms  "
-        f"proxy={proxy * 1000:.1f}ms ({pct:.1f}%)",
+        f"proxy={proxy * 1000:.1f}ms ({pct:.1f}%){token_part}",
         file=sys.stderr,
     )
     sys.stderr.flush()
@@ -226,17 +257,6 @@ async def _timed_aiter(
         yield chunk
 
 
-def _parse_retry_after(headers) -> float | None:
-    """Parse Retry-After header value in seconds, or None if absent/unparseable."""
-    val = headers.get("retry-after") or headers.get("Retry-After")
-    if val is None:
-        return None
-    try:
-        return float(val)
-    except ValueError:
-        return None
-
-
 async def _upstream_request(
     client: httpx.AsyncClient,
     method: str,
@@ -246,41 +266,16 @@ async def _upstream_request(
     headers: dict[str, str] | None = None,
     params: dict | None = None,
     stream: bool = False,
-    max_retries: int = 3,
 ) -> httpx.Response:
-    """Send an upstream request, retrying on 429.
+    """Build and send one upstream request.
 
-    If the upstream returns 429 and retries remain: reads the Retry-After header
-    and waits that many seconds; falls back to exponential backoff with jitter
-    (base 1s, doubled per retry) when the header is absent. Each retry attempt
-    prints a line to stderr.
-
-    Gives up after *max_retries* consecutive 429s and returns the final 429
-    response to the caller.
+    Clients already retry 429s with their own backoff. Retrying inside the proxy
+    multiplies upstream pressure and hides the rate-limit signal from callers.
     """
-    for attempt in range(max_retries + 1):
-        req = client.build_request(
-            method, url, content=content, headers=headers, params=params
-        )
-        resp = await client.send(req, stream=stream)
-        if resp.status_code != 429 or attempt == max_retries:
-            return resp
-
-        retry_after = _parse_retry_after(resp.headers)
-        if retry_after is None:
-            retry_after = (2**attempt) * (0.5 + random.random() * 0.5)
-
-        print(
-            f"  upstream 429 (retry {attempt + 1}/{max_retries}), "
-            f"waiting {retry_after:.1f}s",
-            file=sys.stderr,
-        )
-        if stream:
-            await resp.aread()
-        await resp.aclose()
-        await asyncio.sleep(retry_after)
-
-    raise RuntimeError("_upstream_request: exhausted retries")  # unreachable
+    req = client.build_request(
+        method, url, content=content, headers=headers, params=params
+    )
+    return await client.send(req, stream=stream)
 
 
 _SKIP_REQUEST_HEADERS = {
@@ -499,6 +494,7 @@ async def _handle_proxy(
         async def body_iter():
             # For streaming, track substitutions for debug logging
             substitutions: dict[str, str] = {}
+            usage_acc: list[dict] = []
 
             def track_substitution(upstream: str, client: str):
                 """Track placeholder → unmasked substitutions."""
@@ -523,6 +519,7 @@ async def _handle_proxy(
                         ),
                         masker,
                         on_substitution=track_substitution if debug else None,
+                        on_usage=usage_acc.append,
                     ):
                         if downstream_byte_acc is not None:
                             downstream_byte_acc.append(out)
@@ -534,10 +531,17 @@ async def _handle_proxy(
                 if debug:
                     _log_stream_substitutions(substitutions)
                 if metrics:
+                    usage = None
+                    if usage_acc:
+                        merged = {}
+                        for usage_chunk in usage_acc:
+                            merged.update(usage_chunk)
+                        usage = _extract_usage({"usage": merged})
                     _log_metrics(
                         upstream_config.name,
                         time.perf_counter() - t_start,
                         upstream_acc[0],
+                        usage=usage,
                     )
                 if capture is not None:
                     e2e_s = time.perf_counter() - t_start
@@ -609,7 +613,10 @@ async def _handle_proxy(
                 _log_response(resp_json, unmasked)
             if metrics:
                 _log_metrics(
-                    upstream_config.name, time.perf_counter() - t_start, upstream_acc[0]
+                    upstream_config.name,
+                    time.perf_counter() - t_start,
+                    upstream_acc[0],
+                    usage=_extract_usage(resp_json),
                 )
             if capture is not None:
                 e2e_s = time.perf_counter() - t_start

@@ -17,8 +17,8 @@ import pytest
 
 from anon_proxy.mapping import PIIStore
 from anon_proxy.server import (
+    _extract_usage,
     _maybe_save_store,
-    _parse_retry_after,
     _should_mask_request,
     _upstream_request,
     _write_store_json,
@@ -140,39 +140,6 @@ class TestMaybeSaveStore:
 
 
 # ===========================================================================
-# _parse_retry_after
-# ===========================================================================
-
-
-class TestParseRetryAfter:
-    """Pure function: parses Retry-After header into seconds."""
-
-    def test_retry_after_seconds(self):
-        headers = {"retry-after": "5"}
-        assert _parse_retry_after(headers) == 5.0
-
-    def test_retry_after_float(self):
-        headers = {"retry-after": "2.5"}
-        assert _parse_retry_after(headers) == 2.5
-
-    def test_no_retry_after_header(self):
-        assert _parse_retry_after({}) is None
-
-    def test_retry_after_invalid_returns_none(self):
-        headers = {"retry-after": "foobar"}
-        assert _parse_retry_after(headers) is None
-
-    def test_retry_after_case_insensitive(self):
-        headers = {"Retry-After": "3"}
-        assert _parse_retry_after(headers) == 3.0
-
-    def test_retry_after_both_forms(self):
-        """When both variants are present, lowercase wins (dict order)."""
-        headers = {"retry-after": "1", "Retry-After": "10"}
-        assert _parse_retry_after(headers) == 1.0
-
-
-# ===========================================================================
 # _should_mask_request
 # ===========================================================================
 
@@ -248,7 +215,7 @@ def mock_client():
 
 
 class TestUpstreamRequest:
-    """Async function: wraps httpx.AsyncClient.send with 429 retry."""
+    """Async function: wraps one httpx.AsyncClient.send."""
 
     @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
     async def test_successful_request(self, mock_client):
@@ -259,80 +226,19 @@ class TestUpstreamRequest:
         client.build_request.assert_called_once()
         client.send.assert_awaited_once()
 
-    @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
-    async def test_single_429_then_success(self, mock_client):
-        client, ok = mock_client
+    async def test_429_passes_through_with_retry_after(self, mock_client):
+        client, _ok = mock_client
         err = _mock_response(429)
-        client.send.side_effect = [err, ok]
-
-        resp = await _upstream_request(client, "POST", "https://example.com/api")
-        assert resp is ok
-        assert resp.status_code == 200
-        # Two attempts: 429, then 200
-        assert client.send.await_count == 2
-        err.aclose.assert_awaited_once()
-
-    @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
-    async def test_exhausts_retries_returns_last_429(self, mock_client):
-        client, ok = mock_client
-        errs = [_mock_response(429) for _ in range(4)]
-        client.send.side_effect = list(errs)
+        err.headers = {"retry-after": "7"}
+        client.send.return_value = err
 
         resp = await _upstream_request(client, "POST", "https://example.com/api")
         assert resp.status_code == 429
-        assert client.send.await_count == 4  # initial + 3 retries
-        # The first 3 responses are drained and closed during retry;
-        # the 4th is returned to the caller (caller owns cleanup).
-        for e in errs[:-1]:
-            e.aclose.assert_awaited_once()
-        errs[-1].aclose.assert_not_awaited()
-
-    async def test_respects_retry_after_header(self, mock_client):
-        client, ok = mock_client
-        err = _mock_response(429, {"retry-after": "2"})
-        client.send.side_effect = [err, ok]
-
-        with patch("anon_proxy.server.asyncio.sleep", AsyncMock()) as mock_sleep:
-            resp = await _upstream_request(client, "POST", "https://example.com/api")
-        assert resp.status_code == 200
-        mock_sleep.assert_awaited_once_with(2.0)
-
-    async def test_exponential_backoff_fallback(self, mock_client):
-        """When Retry-After is absent, use exponential backoff with jitter."""
-        client, ok = mock_client
-        err = _mock_response(429)  # no retry-after
-        client.send.side_effect = [err, ok]
-
-        with (
-            patch("anon_proxy.server.random.random", return_value=0.5),
-            patch("anon_proxy.server.asyncio.sleep", AsyncMock()) as mock_sleep,
-        ):
-            resp = await _upstream_request(client, "POST", "https://example.com/api")
-        assert resp.status_code == 200
-        # attempt 0: 2^0 * (0.5 + 0.5 * 0.5) = 1.0 * 0.75 = 0.75
-        mock_sleep.assert_awaited_once_with(0.75)
-
-    @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
-    async def test_streaming_drains_before_retry(self, mock_client):
-        """Streaming 429 responses must be .aread() before .aclose()."""
-        client, ok = mock_client
-        err = _mock_response(429)
-        client.send.side_effect = [err, ok]
-
-        await _upstream_request(client, "POST", "https://example.com/api", stream=True)
-        err.aread.assert_awaited_once()
-        err.aclose.assert_awaited_once()
-
-    @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
-    async def test_non_streaming_skips_aread(self, mock_client):
-        """Non-streaming 429 responses don't need .aread()."""
-        client, ok = mock_client
-        err = _mock_response(429)
-        client.send.side_effect = [err, ok]
-
-        await _upstream_request(client, "POST", "https://example.com/api", stream=False)
+        assert resp.headers["retry-after"] == "7"
+        client.build_request.assert_called_once()
+        client.send.assert_awaited_once()
         err.aread.assert_not_awaited()
-        err.aclose.assert_awaited_once()
+        err.aclose.assert_not_awaited()
 
     @patch("anon_proxy.server.asyncio.sleep", AsyncMock())
     async def test_passthrough_args_to_build_request(self, mock_client):
@@ -354,14 +260,36 @@ class TestUpstreamRequest:
             params={"page": "1"},
         )
 
-    async def test_max_retries_parameter(self, mock_client):
-        """Custom max_retries limits the number of retries."""
-        client, ok = mock_client
-        err = _mock_response(429)
-        client.send.side_effect = [err, err, ok]
 
-        resp = await _upstream_request(
-            client, "POST", "https://example.com/api", max_retries=1
-        )
-        assert resp.status_code == 429  # gave up after 1 retry
-        assert client.send.await_count == 2  # initial + 1 retry
+class TestExtractUsage:
+    def test_anthropic_usage(self):
+        j = {
+            "usage": {
+                "input_tokens": 900,
+                "cache_read_input_tokens": 8000,
+                "cache_creation_input_tokens": 120,
+                "output_tokens": 50,
+            }
+        }
+        assert _extract_usage(j) == {
+            "input": 900,
+            "cache_read": 8000,
+            "cache_creation": 120,
+        }
+
+    def test_openai_usage(self):
+        j = {
+            "usage": {
+                "prompt_tokens": 900,
+                "completion_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 700},
+            }
+        }
+        assert _extract_usage(j) == {
+            "input": 900,
+            "cache_read": 700,
+            "cache_creation": 0,
+        }
+
+    def test_no_usage_returns_none(self):
+        assert _extract_usage({}) is None
