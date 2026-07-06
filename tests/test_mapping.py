@@ -392,6 +392,25 @@ class TestSerialization:
         with pytest.raises(FileNotFoundError):
             PIIStore.load(str(tmp_path / "nope.json"))
 
+    def test_save_creates_owner_only_file(self, store, tmp_path):
+        # The store file maps placeholders back to raw PII — it must not be
+        # readable by other local users.
+        import os
+
+        store.get_or_create("PERSON", "Alice")
+        path = tmp_path / "store.json"
+        store.save(str(path))
+        assert os.stat(path).st_mode & 0o777 == 0o600
+
+    def test_save_tightens_existing_loose_file(self, store, tmp_path):
+        import os
+
+        path = tmp_path / "store.json"
+        path.write_text("{}")
+        os.chmod(path, 0o644)
+        store.save(str(path))
+        assert os.stat(path).st_mode & 0o777 == 0o600
+
     def test_load_invalid_json_raises(self, tmp_path):
         path = tmp_path / "store.json"
         path.write_text("not json")

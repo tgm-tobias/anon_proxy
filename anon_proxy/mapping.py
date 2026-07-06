@@ -104,10 +104,7 @@ class PIIStore:
 
     def save(self, path: str) -> None:
         """Atomically write the store to *path* as JSON."""
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-        os.replace(tmp, path)
+        atomic_write_json(path, self.to_dict())
 
     @classmethod
     def load(cls, path: str) -> "PIIStore":
@@ -118,6 +115,21 @@ class PIIStore:
         except json.JSONDecodeError as e:
             raise ValueError(f"{path}: invalid JSON — {e}") from e
         return cls.from_dict(data)
+
+
+def atomic_write_json(path: str, data: dict) -> None:
+    """Atomically write *data* as JSON, readable by the owner only (0600).
+
+    Store files map placeholders back to raw PII, so they get the same
+    permissions as a credentials file. `os.replace` preserves the tmp
+    file's mode, and `fchmod` covers a leftover tmp from a crashed write.
+    """
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(fd, 0o600)
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
 
 
 _WHITESPACE = re.compile(r"\s+")

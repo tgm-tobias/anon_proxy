@@ -52,3 +52,14 @@ class TestMaskerRegistry:
         )
 
         assert reg2.get("cafe").store.original("<PERSON_1>") == "Alice"
+
+    def test_store_dir_created_owner_only(self, tmp_path, make_filter):
+        import os
+
+        store_dir = tmp_path / "pii-stores"
+        MaskerRegistry(
+            lambda store: Masker(filter=make_filter(), store=store),
+            store_dir=str(store_dir),
+        )
+
+        assert os.stat(store_dir).st_mode & 0o777 == 0o700

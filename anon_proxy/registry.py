@@ -37,7 +37,9 @@ class MaskerRegistry:
         self._maskers: dict[str, Masker] = {}
         self._lock = threading.Lock()
         if store_dir:
-            os.makedirs(store_dir, exist_ok=True)
+            # Store files map placeholders to raw PII; keep the directory
+            # owner-only. Does not tighten a pre-existing looser directory.
+            os.makedirs(store_dir, mode=0o700, exist_ok=True)
 
     def store_path(self, cid: str) -> str | None:
         if self._store_dir is None:

@@ -236,7 +236,6 @@ class TestMultiUserProxy:
         assert resp_b.json()["content"][0]["text"] == "Hello <PERSON_1>"
 
 
-
 # ====================================================================# _should_mask_request
 # ====================================================================
 
@@ -288,6 +287,7 @@ class TestShouldMaskRequest:
 
 # ====================================================================# _upstream_request
 # ====================================================================
+
 
 def _mock_response(status_code=200, headers=None):
     """Build a minimal object shaped like an httpx.Response for mocking."""

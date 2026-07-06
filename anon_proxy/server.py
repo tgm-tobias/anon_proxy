@@ -35,7 +35,7 @@ from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.capture import Capturer
 from anon_proxy.config import Config, load_config
-from anon_proxy.mapping import PIIStore
+from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
 from anon_proxy.registry import MaskerRegistry, client_id
@@ -681,15 +681,12 @@ async def _handle_proxy(
 
 
 def _write_store_json(path: str, data: dict) -> None:
-    """Atomically write serialized store data to *path*.
+    """Atomically write serialized store data to *path*, owner-only (0600).
 
     Runs in a thread pool — *data* is a snapshot captured on the event loop,
     so concurrent store mutations during the write are harmless.
     """
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    atomic_write_json(path, data)
 
 
 async def _maybe_save_store(
