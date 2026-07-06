@@ -47,6 +47,16 @@ dependencies = [
     "uvicorn[standard]>=0.45.0",
 ]
 
+[project.optional-dependencies]
+# Fast CPU inference backend: loads the pre-quantized ONNX export the
+# openai/privacy-filter repo already ships and runs it through ONNX Runtime.
+# (optimum is intentionally NOT used — it caps transformers<4.58, which
+# conflicts with this project's transformers>=5.6; we call onnxruntime directly.)
+onnx = [
+    "onnxruntime>=1.20,<1.24; python_version < '3.11'",
+    "onnxruntime>=1.20; python_version >= '3.11'",
+]
+
 [project.urls]
 Homepage = "https://github.com/KevinXuxuxu/anon_proxy"
 Repository = "https://github.com/KevinXuxuxu/anon_proxy"

@@ -88,12 +88,12 @@ claude[1]> Sure <PERSON_1>, here's the summary of the note from <EMAIL_1>: ...
 
 - Python ≥ 3.10 (use [uv](https://docs.astral.sh/uv/))
 - CUDA GPU recommended (≥4 GB VRAM); CPU works but is slower
-- Apple Silicon (M1/M2/M3/M4) supported via MPS or MLX backends
+- Apple Silicon (M1/M2/M3/M4) supported via the MPS backend
 - `ANTHROPIC_API_KEY` for `test_mask.py`; the proxy itself forwards client auth — no key needed on the server
 
 ```bash
-uv sync        # install dependencies
-uv sync --extra mlx  # optional: Apple Silicon MLX support
+uv sync         # install dependencies
+uv sync --extra onnx  # optional: fast ONNX Runtime backend (see --backend onnx)
 ```
 
 **Dependencies:** `torch`, `transformers` (local PII model), `starlette` + `uvicorn` (proxy server), `httpx` (upstream client), `anthropic` + `prompt-toolkit` (demo scripts).
@@ -110,7 +110,7 @@ uv run python -m anon_proxy.server [options]
 |---|---|---|
 | `--host` | `127.0.0.1` | Bind address (`0.0.0.0` to expose on LAN) |
 | `--port` | `8080` | Listen port |
-| `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `mlx`) |
+| `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `onnx`). `onnx` runs the pre-quantized q4f16 export via ONNX Runtime — much faster on CPU; needs `uv sync --extra onnx`. See [Fast ONNX backend](#fast-onnx-backend). |
 | `--extra-upstream` | — | Add custom provider: `name=url[;adapter=anthropic\|openai][;path_prefix=/path]` |
 | `--store <file>` | — | Path to persistent PII mapping store. Loaded at startup; saved after each request with new entries. Enables cross-restart placeholder consistency — see [Persistent store](#persistent-store) below. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
@@ -132,6 +132,46 @@ uv run python -m anon_proxy.server \
   --config config.json \
   --backend mps \
   --debug
+```
+
+### Fast ONNX backend
+
+`--backend onnx` runs the pre-quantized `model_q4f16.onnx` export that the
+`openai/privacy-filter` repo already ships, through ONNX Runtime, instead of
+the default torch pipeline. On CPU-only machines (the common laptop and k8s
+case) this is dramatically faster with no loss of detection coverage.
+
+```bash
+uv sync --extra onnx
+uv run python -m anon_proxy.server --backend onnx
+```
+
+- **Opt-in:** the onnx extra (`optimum[onnxruntime]`) is not part of the base
+  install. Without it, `--backend onnx` fails with a clear install hint.
+- **Same detections:** a golden parity gate
+  (`tests/test_backend_parity.py`) asserts the onnx backend masks every
+  character the torch backend masks across names, emails, phones, addresses,
+  a chunk-boundary case, CJK, and code — over-masking is allowed, missing a
+  torch detection fails the gate.
+- **First run downloads** the ~0.77 GB q4f16 graph (plus its weights sidecar)
+  from Hugging Face; subsequent runs are cached.
+
+**Benchmark** — 12-turn agent replay, each request carrying the full history
+(the dominant real shape), on a CPU-only Apple Silicon laptop:
+
+| backend | cold start | warm median | warm p95 | 12-turn total |
+|---------|-----------:|------------:|---------:|--------------:|
+| torch (default) | 7.3 s | 9.2 s | 10.0 s | 109.2 s |
+| **onnx q4f16** | 1.8 s | **0.67 s** | 0.86 s | **9.6 s** |
+
+≈14× faster on warm turns and ≈11× lower total latency, with no missed
+detections (the parity gate above). The win comes from int4/fp16 quantization,
+so it is largest exactly where torch hurts most: CPU-only boxes.
+
+Reproduce the benchmark yourself:
+
+```bash
+ANON_PROXY_LIVE_TESTS=1 uv run python scripts/bench_masking.py
 ```
 
 ### Config file

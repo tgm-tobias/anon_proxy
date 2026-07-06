@@ -775,9 +775,8 @@ def _parse_extra_upstream(spec: str) -> tuple[str, UpstreamConfig]:
     )
 
 
-def main() -> None:
+def _build_parser():
     import argparse
-    import uvicorn
 
     parser = argparse.ArgumentParser(
         description="anon-proxy — PII masking proxy for LLM APIs"
@@ -836,13 +835,10 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         default=os.environ.get("ANON_PROXY_BACKEND", "auto"),
-        choices=["auto", "cpu", "mps", "mlx"],
-        help="PII detection backend (default: auto-detect best available).",
-    )
-    parser.add_argument(
-        "--mlx-weights-cache",
-        default=os.environ.get("ANON_PROXY_MLX_WEIGHTS_CACHE"),
-        help="Path to cached MLX-converted weights. Generated on first use if not found.",
+        choices=["auto", "cpu", "mps", "onnx"],
+        help="PII detection backend (default: auto-detect best available). "
+        "'onnx' runs the pre-quantized q4f16 export via ONNX Runtime "
+        "(much faster on CPU; needs `uv sync --extra onnx`).",
     )
     parser.add_argument(
         "--no-system-inject",
@@ -862,7 +858,13 @@ def main() -> None:
         help="Add an extra upstream provider. Repeatable. "
         "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    import uvicorn
+
+    args = _build_parser().parse_args()
 
     if args.config:
         try:
@@ -895,11 +897,10 @@ def main() -> None:
 
     pf: PrivacyFilter | None = None
     if cfg.merge_gap or args.chunk_size != 1500 or args.backend != "auto":
-        device = None if args.backend == "auto" else args.backend
         pf = PrivacyFilter(
             merge_gap_allowed=cfg.merge_gap or None,
             chunk_size=args.chunk_size,
-            device=device,
+            backend=args.backend,
         )
 
     # Load persistent PII store if requested.
