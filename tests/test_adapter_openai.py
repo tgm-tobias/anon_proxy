@@ -21,6 +21,7 @@ import pytest
 
 from anon_proxy.adapters import openai as oai
 from anon_proxy.regex_detector import RegexDetector
+from tests.conftest import span
 
 
 @pytest.fixture
@@ -51,6 +52,15 @@ class TestMaskRequestShape:
         original = {"messages": [{"role": "user", "content": "Hi Alice"}]}
         oai.mask_request(body, masker)
         assert body == original
+
+    def test_responses_api_input_is_masked(self, make_masker, fake_pipeline):
+        masker = make_masker()
+        fake_pipeline.set("I am Alice", [span("private_person", 5, 10, word="Alice")])
+        body = {"model": "gpt-x", "input": "I am Alice"}
+
+        out = oai.mask_request(body, masker)
+
+        assert "Alice" not in json.dumps(out)
 
 
 class TestMaskRequestStringContent:
@@ -188,7 +198,7 @@ class TestMaskRequestTools:
         out = oai.mask_request(body, masker)
         assert out["tools"][0]["function"]["description"] == "Sends a message to Alice"
 
-    def test_parameters_schema_walked(self, masker):
+    def test_parameters_schema_left_alone(self, masker):
         body = {
             "tools": [
                 {
@@ -213,7 +223,7 @@ class TestMaskRequestTools:
         desc = out["tools"][0]["function"]["parameters"]["properties"]["to"][
             "description"
         ]
-        assert desc == "name like <PERSON_1>"
+        assert desc == "name like Alice"
 
 
 class TestMaskRequestUsesMaskObj:
@@ -334,11 +344,15 @@ class TestUnmaskResponseToolCalls:
 class TestInjectSystem:
     PROMPT = "INJECTED PROMPT"
 
-    def test_no_messages_inserts_system(self):
+    def test_no_messages_leaves_non_chat_body_unchanged(self):
         body = {"model": "gpt-4o"}
         out = oai.inject_system(body, self.PROMPT)
-        assert out["messages"] == [{"role": "system", "content": self.PROMPT}]
-        assert out["model"] == "gpt-4o"
+        assert out == body
+
+    def test_responses_api_body_does_not_gain_messages(self):
+        body = {"model": "gpt-4o", "input": "hello"}
+        out = oai.inject_system(body, self.PROMPT)
+        assert "messages" not in out
 
     def test_empty_messages_inserts_system(self):
         body = {"messages": []}

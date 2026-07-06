@@ -21,26 +21,44 @@ from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.adapters._streaming import split_at_last_open
 from anon_proxy.masker import Masker
+from anon_proxy.policy import Policy, mask_body
+
+
+ANTHROPIC_POLICY = Policy(
+    pass_keys=frozenset(
+        {
+            "model",
+            "role",
+            "type",
+            "id",
+            "name",
+            "tool_use_id",
+            "media_type",
+            "stop_reason",
+            "stop_sequence",
+            "signature",
+            "cache_control",
+            "service_tier",
+            "tool_choice",
+            "container",
+        }
+    ),
+    pass_paths=frozenset(
+        {
+            ("system",),
+            ("tools",),
+            ("metadata",),
+            ("mcp_servers",),
+        }
+    ),
+    pass_block_types=frozenset({"thinking", "redacted_thinking"}),
+    pass_block_subtrees={"image": "source", "document": "source"},
+)
 
 
 def mask_request(body: dict, masker: Masker) -> dict:
-    """Return a copy of an Anthropic Messages request body with PII masked.
-
-    Only touches `messages[*].content` — user/assistant text, tool_use.input,
-    and tool_result.content. The system prompt is left intact because it
-    contains static tool definitions and instructions, not user data.
-
-    Each message is routed through `masker.mask_obj` so identical messages
-    across turns (the dominant shape of conversation history) hit a hash cache
-    and skip the recursive walk + detection entirely.
-    """
-    result = dict(body)
-    messages = body.get("messages")
-    if isinstance(messages, list):
-        result["messages"] = [
-            masker.mask_obj(m, lambda mm: _mask_message(mm, masker)) for m in messages
-        ]
-    return result
+    """Return a copy of an Anthropic request body with PII masked."""
+    return mask_body(body, masker, ANTHROPIC_POLICY)
 
 
 def inject_system(body: dict, prompt: str) -> dict:
@@ -72,38 +90,6 @@ def unmask_response(body: dict, masker: Masker) -> dict:
     # block types, metadata fields, or any other location the targeted block
     # handlers don't cover. Cost is ~100 µs for a typical response.
     return _walk_strings(result, masker.unmask)
-
-
-def _mask_message(message, masker: Masker):
-    if not isinstance(message, dict):
-        return message
-    content = message.get("content")
-    if isinstance(content, str):
-        return {**message, "content": masker.mask(content)}
-    if isinstance(content, list):
-        return {**message, "content": [_mask_block(b, masker) for b in content]}
-    return message
-
-
-def _mask_block(block, masker: Masker):
-    if not isinstance(block, dict):
-        return block
-    btype = block.get("type")
-    if btype == "text" and isinstance(block.get("text"), str):
-        return {**block, "text": masker.mask(block["text"])}
-    if btype == "tool_use":
-        input_val = block.get("input")
-        if isinstance(input_val, (dict, list)):
-            return {**block, "input": _walk_strings(input_val, masker.mask)}
-        return block
-    if btype == "tool_result":
-        content = block.get("content")
-        if isinstance(content, str):
-            return {**block, "content": masker.mask(content)}
-        if isinstance(content, list):
-            return {**block, "content": [_mask_block(b, masker) for b in content]}
-        return block
-    return block
 
 
 def _unmask_block(block, masker: Masker):

@@ -16,32 +16,34 @@ from collections.abc import AsyncIterator, Callable
 
 from anon_proxy.adapters._streaming import split_at_last_open
 from anon_proxy.masker import Masker
+from anon_proxy.policy import Policy, mask_body
+
+
+OPENAI_POLICY = Policy(
+    pass_keys=frozenset(
+        {
+            "model",
+            "role",
+            "type",
+            "id",
+            "name",
+            "tool_call_id",
+            "finish_reason",
+            "logprobs",
+            "response_format",
+            "tool_choice",
+            "user",
+        }
+    ),
+    pass_paths=frozenset({("tools",), ("functions",), ("instructions",)}),
+    pass_block_types=frozenset(),
+    pass_block_subtrees={"image_url": "image_url"},
+)
 
 
 def mask_request(body: dict, masker: Masker) -> dict:
-    """Return a copy of an OpenAI chat completions request with PII masked.
-
-    Masked fields:
-    - messages[*].content (text)
-    - messages[*].tool_calls[*].function.arguments (string)
-    - tools[*].function.parameters (schema)
-    """
-    result = dict(body)
-    messages = body.get("messages")
-    if isinstance(messages, list):
-        # Each message goes through mask_obj so identical earlier messages in
-        # conversation history skip the recursive walk entirely (matches the
-        # Anthropic adapter).
-        result["messages"] = [
-            masker.mask_obj(m, lambda mm: _mask_message(mm, masker)) for m in messages
-        ]
-
-    # Mask tool definitions
-    tools = body.get("tools")
-    if isinstance(tools, list):
-        result["tools"] = [_mask_tool(t, masker) for t in tools]
-
-    return result
+    """Return a copy of an OpenAI request body with PII masked."""
+    return mask_body(body, masker, OPENAI_POLICY)
 
 
 def inject_system(body: dict, prompt: str) -> dict:
@@ -53,6 +55,8 @@ def inject_system(body: dict, prompt: str) -> dict:
     sees the placeholder explanation before any client-supplied instructions.
     """
     result = dict(body)
+    if "messages" not in body:
+        return result
     messages = list(body.get("messages") or [])
     if (
         messages
@@ -80,86 +84,6 @@ def unmask_response(body: dict, masker: Masker) -> dict:
     choices = body.get("choices")
     if isinstance(choices, list):
         result["choices"] = [_unmask_choice(c, masker) for c in choices]
-    return result
-
-
-def _mask_message(message: dict, masker: Masker) -> dict:
-    """Mask a single message."""
-    if not isinstance(message, dict):
-        return message
-
-    result = dict(message)
-
-    # Mask content
-    content = message.get("content")
-    if isinstance(content, str):
-        result["content"] = masker.mask(content)
-    elif isinstance(content, list):
-        # OpenAI supports array content (text + images)
-        result["content"] = [_mask_content_item(c, masker) for c in content]
-
-    # Mask tool calls
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list):
-        result["tool_calls"] = [_mask_tool_call(tc, masker) for tc in tool_calls]
-
-    # Mask tool call_id in role=tool messages
-    if message.get("role") == "tool" and isinstance(content, str):
-        result["content"] = masker.mask(content)
-
-    return result
-
-
-def _mask_content_item(item: dict, masker: Masker) -> dict:
-    """Mask a content item (text or image_url)."""
-    if item.get("type") == "text" and isinstance(item.get("text"), str):
-        return {**item, "text": masker.mask(item["text"])}
-    if item.get("type") == "image_url":
-        # Could mask URLs if they contain PII, but usually just skip
-        return item
-    return item
-
-
-def _mask_tool_call(tool_call: dict, masker: Masker) -> dict:
-    """Mask a tool call (function arguments)."""
-    result = dict(tool_call)
-    function = tool_call.get("function", {})
-    if isinstance(function, dict):
-        args = function.get("arguments")
-        if isinstance(args, str):
-            # Arguments are JSON string - mask after parsing
-            try:
-                args_obj = json.loads(args)
-                masked = _walk_strings(args_obj, masker.mask)
-                result["function"] = {**function, "arguments": json.dumps(masked)}
-            except json.JSONDecodeError:
-                # If not valid JSON, just mask as string
-                result["function"] = {**function, "arguments": masker.mask(args)}
-        elif isinstance(args, dict):
-            # Arguments as object (some variations)
-            result["function"] = {
-                **function,
-                "arguments": _walk_strings(args, masker.mask),
-            }
-    return result
-
-
-def _mask_tool(tool: dict, masker: Masker) -> dict:
-    """Mask a tool definition (function parameters only).
-
-    `description` is static schema authored alongside the tool — not user data —
-    and is intentionally left untouched. `parameters` is still walked because
-    some apps embed user-supplied examples there.
-    """
-    result = dict(tool)
-    function = tool.get("function", {})
-    if isinstance(function, dict):
-        masked_func = dict(function)
-        if isinstance(function.get("parameters"), dict):
-            masked_func["parameters"] = _walk_strings(
-                function["parameters"], masker.mask
-            )
-        result["function"] = masked_func
     return result
 
 

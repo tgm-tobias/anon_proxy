@@ -197,7 +197,19 @@ class TestMaskRequestBlockListContent:
         assert block["text"] == "msg from <PERSON_1>"
         assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
-    def test_unknown_block_type_left_alone(self, masker):
+    def test_unknown_block_type_masks_string_leaves(self, masker):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "future", "payload": {"data": "Alice"}}],
+                }
+            ]
+        }
+        out = anth.mask_request(body, masker)
+        assert out["messages"][0]["content"][0]["payload"]["data"] == "<PERSON_1>"
+
+    def test_image_source_passes_through(self, masker):
         body = {
             "messages": [
                 {
@@ -207,8 +219,6 @@ class TestMaskRequestBlockListContent:
             ]
         }
         out = anth.mask_request(body, masker)
-        # Unknown block type → passed through verbatim, even though it
-        # textually contains PII.
         assert out["messages"][0]["content"][0]["source"]["data"] == "Alice"
 
 
