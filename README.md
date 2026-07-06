@@ -210,6 +210,7 @@ Writes are atomic (written to a `.tmp` file, then renamed) and offloaded to a th
 
 Also settable via `ANON_PROXY_STORE` environment variable.
 
+<<<<<<< HEAD
 ### Multi-user deployments
 
 Single-user mode uses one shared placeholder store for the whole proxy process.
@@ -230,6 +231,28 @@ do not include either header fail closed with `401`.
 With `--store`, the path is a directory. Each client gets its own
 `<client_id>.json` file, where `client_id` is the first 16 hex characters of a
 SHA-256 hash of the credential. The credential itself is never written to disk.
+=======
+Inspect or clean a store with `anon-proxy-store` after stopping the proxy:
+
+```bash
+uv run anon-proxy-store --store /data/pii_store.json list --label PERSON
+uv run anon-proxy-store --store /data/pii_store.json show '<PERSON_1>'
+uv run anon-proxy-store --store /data/pii_store.json purge '<PERSON_42>'
+```
+
+Bulk-prune short false-positive fragments with a dry run first:
+
+```bash
+uv run anon-proxy-store --store /data/pii_store.json prune --label PERSON --max-len 3 --dry-run
+uv run anon-proxy-store --store /data/pii_store.json prune --label PERSON --max-len 3
+```
+
+`purge` and non-dry-run `prune` write `/data/pii_store.json.bak` before
+modifying the store. Counters are never decremented, so deleted placeholder
+indexes are not reused in old transcripts. `prune` requires at least one filter
+or an explicit `--all`; this prevents an accidental bare prune from selecting
+the entire store.
+>>>>>>> 9464d5d (feat: rebuild store cleanup CLI)
 
 ## Docker
 

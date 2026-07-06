@@ -1,7 +1,6 @@
 """Tests for server-level persistence wiring.
 
 Covered:
-- ``_write_store_json`` — raw file-writing helper (sync, runs in thread pool).
 - ``_maybe_save_store`` — the async gate that decides whether to write and
   offloads I/O to a thread.
 """
@@ -19,8 +18,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
-from anon_proxy.mapping import PIIStore
 from anon_proxy.default_patterns import DEFAULT_PATTERNS
+from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker
 from anon_proxy.registry import MaskerRegistry
 from anon_proxy.server import (
@@ -30,7 +29,6 @@ from anon_proxy.server import (
     _maybe_save_store,
     _should_mask_request,
     _upstream_request,
-    _write_store_json,
 )
 from anon_proxy.upstream import UpstreamConfig
 from tests.conftest import span
@@ -50,31 +48,31 @@ class TestEffectivePatterns:
 
 
 # ---------------------------------------------------------------------------
-# _write_store_json (the sync I/O helper)
+# atomic_write_json (the shared sync I/O helper)
 # ---------------------------------------------------------------------------
 
 
-class TestWriteStoreJson:
+class TestAtomicWriteJson:
     def test_writes_valid_store_file(self, tmp_path):
         path = tmp_path / "store.json"
         data = {"reverse": {"<PERSON_1>": "Alice"}, "counters": {"PERSON": 2}}
-        _write_store_json(str(path), data)
+        atomic_write_json(str(path), data)
         assert path.exists()
         loaded = PIIStore.load(str(path))
         assert loaded.original("<PERSON_1>") == "Alice"
 
     def test_tmp_file_cleaned_up(self, tmp_path):
         path = tmp_path / "store.json"
-        _write_store_json(str(path), {"reverse": {}, "counters": {}})
+        atomic_write_json(str(path), {"reverse": {}, "counters": {}})
         assert not (tmp_path / "store.json.tmp").exists()
 
     def test_overwrites_existing_file(self, tmp_path):
         path = tmp_path / "store.json"
-        _write_store_json(
+        atomic_write_json(
             str(path), {"reverse": {"<P_1>": "first"}, "counters": {"P": 2}}
         )
         assert PIIStore.load(str(path)).original("<P_1>") == "first"
-        _write_store_json(
+        atomic_write_json(
             str(path), {"reverse": {"<P_1>": "second"}, "counters": {"P": 2}}
         )
         assert PIIStore.load(str(path)).original("<P_1>") == "second"
@@ -82,7 +80,7 @@ class TestWriteStoreJson:
     def test_non_existent_directory_raises(self, tmp_path):
         path = tmp_path / "missing" / "store.json"
         with pytest.raises(OSError):
-            _write_store_json(str(path), {"reverse": {}, "counters": {}})
+            atomic_write_json(str(path), {"reverse": {}, "counters": {}})
 
 
 # ---------------------------------------------------------------------------

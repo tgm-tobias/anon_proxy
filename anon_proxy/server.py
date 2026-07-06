@@ -681,15 +681,6 @@ async def _handle_proxy(
     )
 
 
-def _write_store_json(path: str, data: dict) -> None:
-    """Atomically write serialized store data to *path*, owner-only (0600).
-
-    Runs in a thread pool — *data* is a snapshot captured on the event loop,
-    so concurrent store mutations during the write are harmless.
-    """
-    atomic_write_json(path, data)
-
-
 async def _maybe_save_store(
     masker: Masker,
     store_path: str | None,
@@ -704,7 +695,7 @@ async def _maybe_save_store(
     if len(masker.store) > store_before:
         data = masker.store.to_dict()
         try:
-            await asyncio.to_thread(_write_store_json, store_path, data)
+            await asyncio.to_thread(atomic_write_json, store_path, data)
         except OSError as e:
             print(f"error: failed to save PII store: {e}", file=sys.stderr)
 

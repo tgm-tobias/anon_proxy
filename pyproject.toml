@@ -54,6 +54,7 @@ Issues = "https://github.com/KevinXuxuxu/anon_proxy/issues"
 
 [project.scripts]
 anon-proxy = "anon_proxy.server:main"
+anon-proxy-store = "anon_proxy.store_cli:main"
 
 [build-system]
 requires = ["hatchling"]
