@@ -9,6 +9,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Iterable, Protocol
 
+from anon_proxy.known_entities import KnownEntityDetector
 from anon_proxy.mapping import PIIStore, normalize_label
 from anon_proxy.privacy_filter import PIIEntity, PrivacyFilter
 
@@ -79,10 +80,23 @@ class Masker:
         skip_patterns: list[re.Pattern] | None = None,
         ignore_labels: Iterable[str] | None = None,
         cache_size: int = 4096,
+        canary: str = "warn",
+        min_known_entity_len: int = 6,
     ) -> None:
+        if canary not in {"warn", "fix", "off"}:
+            raise ValueError("canary must be one of: warn, fix, off")
+        if min_known_entity_len < 0:
+            raise ValueError("min_known_entity_len must be >= 0")
         self._filter = filter if filter is not None else PrivacyFilter()
         self._store = store if store is not None else PIIStore()
-        self._extra: list[Detector] = list(extra_detectors or [])
+        self._pre_detectors: list[Detector] = list(extra_detectors or [])
+        self._canary_detectors: list[Detector] = self._pre_detectors
+        self._known_detector: Detector | None = (
+            KnownEntityDetector(self._store, min_len=min_known_entity_len)
+            if min_known_entity_len
+            else None
+        )
+        self._canary = canary
         self._skip_patterns = (
             skip_patterns if skip_patterns is not None else _SKIP_MASK_PATTERNS
         )
@@ -142,15 +156,23 @@ class Masker:
                 )
             return cached[1]
 
+        # Pass 0: exact values the store already knows. Cache entries are keyed
+        # only by input text, so values learned after a cache fill intentionally
+        # do not retro-apply to that cached text.
+        known_entities: list[PIIEntity] = []
+        if self._known_detector is not None:
+            known_entities = _resolve_overlaps(self._known_detector.detect(text))
+        known_intermediate = self._substitute(text, known_entities)
+
         # Pass 1: regex detectors first. Substitute matches inline so the ML
         # model sees full context with regex-confirmed PII collapsed to short
         # placeholder tokens — preserves transformer context, prevents the model
         # from second-guessing high-precision regex hits.
         regex_entities: list[PIIEntity] = []
-        for detector in self._extra:
-            regex_entities.extend(detector.detect(text))
+        for detector in self._pre_detectors:
+            regex_entities.extend(detector.detect(known_intermediate))
         regex_entities = _resolve_overlaps(regex_entities)
-        intermediate = self._substitute(text, regex_entities)
+        intermediate = self._substitute(known_intermediate, regex_entities)
 
         # Pass 2: ML model on the regex-masked text. Defensively drop any span
         # that intersects a placeholder token; substituting inside one would
@@ -168,10 +190,23 @@ class Masker:
         ml_entities = _resolve_overlaps(ml_entities)
         masked = self._substitute(intermediate, ml_entities)
 
+        canary_hits = self._canary_hits(masked)
+        if canary_hits:
+            for hit in canary_hits:
+                suffix = " - masking now" if self._canary == "fix" else ""
+                print(
+                    f"warning: canary: {hit.label} {hit.text!r} survived masking{suffix}",
+                    file=sys.stderr,
+                )
+            if self._canary == "fix":
+                masked = self._substitute(masked, canary_hits)
+
         # Detection may race for the same uncached text. That is harmless:
         # PIIStore allocation is idempotent, and both threads write the same
         # content-hash cache entry.
-        self._cache_result(content_hash, regex_entities + ml_entities, masked)
+        self._cache_result(
+            content_hash, known_entities + regex_entities + ml_entities, masked
+        )
         if record is not None:
             record.append(
                 {
@@ -256,6 +291,14 @@ class Masker:
                 }
             )
         return result
+
+    def _canary_hits(self, masked: str) -> list[PIIEntity]:
+        if self._canary == "off" or not self._canary_detectors:
+            return []
+        hits: list[PIIEntity] = []
+        for detector in self._canary_detectors:
+            hits.extend(detector.detect(masked))
+        return _drop_placeholder_overlaps(_resolve_overlaps(hits), masked)
 
     def unmask(self, text: str) -> str:
         record = _TELEMETRY.get()

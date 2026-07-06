@@ -15,6 +15,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import re
 
+import pytest
+
+from anon_proxy.masker import Masker
 from anon_proxy.masker import _drop_placeholder_overlaps, _resolve_overlaps
 from anon_proxy.privacy_filter import PIIEntity
 from anon_proxy.regex_detector import RegexDetector
@@ -216,12 +219,104 @@ class TestRegexOnlyPath:
         assert fake_pipeline.calls == [["Call <PHONE_1> today"]]
 
 
+class TestKnownEntityPass:
+    def test_learned_value_masks_later_in_code_context(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker()
+        prose = "My name is Alice Smith."
+        fake_pipeline.set(
+            prose,
+            [span("private_person", 11, 22, word="Alice Smith", score=0.99)],
+        )
+        assert "<PERSON_1>" in m.mask(prose)
+
+        code = 'os.environ["OWNER"] = "Alice Smith"'
+        fake_pipeline.set('os.environ["OWNER"] = "<PERSON_1>"', [])
+        assert m.mask(code) == 'os.environ["OWNER"] = "<PERSON_1>"'
+
+    def test_known_entity_runs_before_regex_prepass(self, make_masker, fake_pipeline):
+        m = make_masker(extra_detectors=[RegexDetector({"PERSON": r"Alice Smith"})])
+        m.store.get_or_create("PERSON", "Alice Smith")
+
+        text = "owner Alice Smith"
+        fake_pipeline.set("owner <PERSON_1>", [])
+
+        assert m.mask(text) == "owner <PERSON_1>"
+        assert m.store.items() == [("<PERSON_1>", "Alice Smith")]
+
+    def test_cache_does_not_retro_apply_newly_learned_value(
+        self, make_masker, fake_pipeline
+    ):
+        m = make_masker()
+        text = "owner Alice Smith"
+        fake_pipeline.set(text, [])
+        assert m.mask(text) == text
+
+        m.store.get_or_create("PERSON", "Alice Smith")
+
+        assert m.mask(text) == text
+
+
 class TestMlOnlyPath:
     def test_ml_match_becomes_placeholder(self, make_masker, fake_pipeline):
         m = make_masker()
         text = "Hello Bob"
         fake_pipeline.set(text, [span("PERSON", 6, 9, score=0.9)])  # "Bob"
         assert m.mask(text) == "Hello <PERSON_1>"
+
+
+class TestPostMaskCanary:
+    def test_warn_mode_logs_and_forwards(self, make_masker, capsys):
+        m = make_masker(
+            extra_detectors=[RegexDetector({"EMAIL": r"[\w.]+@[\w.]+"})],
+            canary="warn",
+        )
+        m._pre_detectors = []
+
+        out = m.mask("contact bob@x.com ok")
+
+        assert "bob@x.com" in out
+        assert "canary" in capsys.readouterr().err
+
+    def test_fix_mode_masks_the_miss(self, make_masker):
+        m = make_masker(
+            extra_detectors=[RegexDetector({"EMAIL": r"[\w.]+@[\w.]+"})],
+            canary="fix",
+        )
+        m._pre_detectors = []
+
+        out = m.mask("contact bob@x.com ok")
+
+        assert "bob@x.com" not in out
+        assert "<EMAIL_1>" in out
+
+    def test_off_mode_silent(self, make_masker, capsys):
+        m = make_masker(
+            extra_detectors=[RegexDetector({"EMAIL": r"[\w.]+@[\w.]+"})],
+            canary="off",
+        )
+        m._pre_detectors = []
+
+        m.mask("contact bob@x.com ok")
+
+        assert "canary" not in capsys.readouterr().err
+
+    def test_no_false_canary_on_clean_mask(self, make_masker, capsys, fake_pipeline):
+        m = make_masker(
+            extra_detectors=[RegexDetector({"EMAIL": r"[\w.]+@[\w.]+"})],
+            canary="warn",
+        )
+        fake_pipeline.set("contact <EMAIL_1> ok", [])
+
+        m.mask("contact bob@x.com ok")
+
+        assert "canary" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("canary", ["loud", "", "WARN"])
+    def test_canary_rejects_unknown_modes(self, canary, make_filter, store):
+        with pytest.raises(ValueError, match="canary"):
+            Masker(filter=make_filter(), store=store, canary=canary)
 
 
 class TestRegexAndMlCombined:
@@ -266,8 +361,9 @@ class TestEmptyExtraDetectorsIsTransparent:
 
 
 class TestExtraDetectorsSeeOriginal:
-    """Every extra_detector receives the ORIGINAL text, never the output of
-    another detector. The two-pass model is regex-then-ML, not chained."""
+    """Every pre-pass detector receives the ORIGINAL text, never the output of
+    another detector. The default canary runs the same detectors again after
+    masking."""
 
     def test_all_extra_detectors_get_original(self, make_masker):
         class Recorder:
@@ -282,9 +378,9 @@ class TestExtraDetectorsSeeOriginal:
         m = make_masker(extra_detectors=[d1, d2, d3])
         text = "the original text"
         m.mask(text)
-        assert d1.seen == [text]
-        assert d2.seen == [text]
-        assert d3.seen == [text]
+        assert d1.seen == [text, text]
+        assert d2.seen == [text, text]
+        assert d3.seen == [text, text]
 
 
 class TestSubstitutionMechanics:

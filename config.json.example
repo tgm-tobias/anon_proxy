@@ -18,6 +18,9 @@
   },
   "ignore_labels": [],
   "system_inject": true,
+  "default_patterns": true,
+  "canary": "warn",
+  "min_known_entity_len": 6,
   "upstreams": {
     "deepseek": {
       "base_url": "https://api.deepseek.com",

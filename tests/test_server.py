@@ -20,9 +20,11 @@ from starlette.testclient import TestClient
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.mapping import PIIStore
+from anon_proxy.default_patterns import DEFAULT_PATTERNS
 from anon_proxy.masker import Masker
 from anon_proxy.registry import MaskerRegistry
 from anon_proxy.server import (
+    _effective_patterns,
     _extract_usage,
     build_app,
     _maybe_save_store,
@@ -32,6 +34,19 @@ from anon_proxy.server import (
 )
 from anon_proxy.upstream import UpstreamConfig
 from tests.conftest import span
+
+
+class TestEffectivePatterns:
+    def test_default_patterns_include_defaults_by_default(self):
+        assert _effective_patterns({}, True) == DEFAULT_PATTERNS
+
+    def test_user_patterns_override_default_label(self):
+        patterns = _effective_patterns({"EMAIL": "custom"}, True)
+
+        assert patterns["EMAIL"] == "custom"
+
+    def test_defaults_can_be_disabled(self):
+        assert _effective_patterns({"EMAIL": "custom"}, False) == {"EMAIL": "custom"}
 
 
 # ---------------------------------------------------------------------------

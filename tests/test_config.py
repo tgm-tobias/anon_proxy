@@ -58,6 +58,35 @@ class TestSystemInject:
             load_config(_write(tmp_path, {"bogus": True}))
 
 
+class TestDetectionQualityConfig:
+    def test_detection_defaults(self, tmp_path):
+        cfg = load_config(_write(tmp_path, {}))
+        assert cfg.default_patterns is True
+        assert cfg.canary == "warn"
+        assert cfg.min_known_entity_len == 6
+
+    def test_default_patterns_flag_parses(self, tmp_path):
+        cfg = load_config(_write(tmp_path, {"default_patterns": False}))
+        assert cfg.default_patterns is False
+
+    def test_canary_modes_parse(self, tmp_path):
+        for mode in ("warn", "fix", "off"):
+            cfg = load_config(_write(tmp_path, {"canary": mode}))
+            assert cfg.canary == mode
+
+    def test_canary_rejects_unknown_mode(self, tmp_path):
+        with pytest.raises(ValueError, match="canary"):
+            load_config(_write(tmp_path, {"canary": "loud"}))
+
+    def test_min_known_entity_len_parses(self, tmp_path):
+        cfg = load_config(_write(tmp_path, {"min_known_entity_len": 12}))
+        assert cfg.min_known_entity_len == 12
+
+    def test_min_known_entity_len_rejects_negative(self, tmp_path):
+        with pytest.raises(ValueError, match="min_known_entity_len"):
+            load_config(_write(tmp_path, {"min_known_entity_len": -1}))
+
+
 class TestUpstreams:
     def test_default_is_empty(self, tmp_path):
         cfg = load_config(_write(tmp_path, {}))

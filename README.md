@@ -116,6 +116,9 @@ uv run python -m anon_proxy.server [options]
 | `--multi-user` | off | Namespace PII stores by client credential. Requires each masking request to include `x-api-key` or `authorization`; with `--store`, the path is treated as a directory. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
+| `--no-default-patterns` | off | Disable built-in regex detectors for common PII and secrets |
+| `--canary warn\|fix\|off` | `warn` | Run regex detectors after masking; `fix` masks any surviving hit before forwarding |
+| `--min-known-entity-len <N>` | `6` | Minimum stored value length for exact known-entity matching; `0` disables |
 | `--chunk-size <N>` | `6000` | Max chars per model inference chunk — lower values reduce peak VRAM |
 | `--batch-size <N>` | `8` | Batch size for model inference over chunks |
 | `--no-system-inject` | off | Disable the placeholder-explainer system prompt that the proxy prepends to outbound requests. Also settable via `system_inject: false` in `config.json`. |
@@ -138,7 +141,7 @@ uv run python -m anon_proxy.server \
 
 ### Config file
 
-`config.json` is a single JSON object with five optional top-level keys:
+`config.json` is a single JSON object with optional top-level keys:
 
 ```json
 {
@@ -152,6 +155,9 @@ uv run python -m anon_proxy.server \
   },
   "ignore_labels": ["DATE", "TITLE"],
   "system_inject": true,
+  "default_patterns": true,
+  "canary": "warn",
+  "min_known_entity_len": 6,
   "upstreams": {
     "deepseek": {
       "base_url": "https://api.deepseek.com",
@@ -162,10 +168,13 @@ uv run python -m anon_proxy.server \
 }
 ```
 
-- **`patterns`** — extra regex detectors for PII the ML model misses (SSNs, IPs, internal IDs). Run *before* the ML pass; matches are substituted inline so the model still sees full sentence context.
+- **`patterns`** — extra regex detectors for PII the ML model misses (SSNs, IPs, internal IDs). Run *before* the ML pass; matches are substituted inline so the model still sees full sentence context. Same-label entries override built-in default patterns.
 - **`merge_gap`** — per-label characters allowed inside a gap when merging adjacent same-label spans (e.g. hyphen for `PERSON` so "Jean-Luc" → one token). Overrides entries in the model's defaults; labels you don't mention keep the default.
 - **`ignore_labels`** — labels detected by the ML model that should *not* be masked. Useful for noisy categories (e.g. `DATE`, `TITLE`) that confuse the upstream LLM more than they protect privacy. Regex matches are unaffected — if you don't want a regex label, just don't include it in `patterns`.
 - **`system_inject`** *(default `true`)* — prepend a short system prompt to outbound requests telling the model that `<LABEL_N>` tokens are opaque references it should echo verbatim, not invent fill-in values for. Merged with any system prompt the client already sent (so client `cache_control` markers on later blocks stay valid). Disable if you've already embedded equivalent instructions client-side, or pass `--no-system-inject` on the command line.
+- **`default_patterns`** *(default `true`)* — enable built-in regex detectors for common emails, phone numbers, SSNs, IPv4 addresses, credit cards with separators, and high-structure secrets such as AWS keys, GitHub tokens, JWTs, private-key headers, and Slack tokens. Disable with `false` or `--no-default-patterns`.
+- **`canary`** *(default `"warn"`)* — run regex detectors over the final masked text. `"warn"` logs any surviving hit; `"fix"` masks it before forwarding; `"off"` disables the check.
+- **`min_known_entity_len`** *(default `6`)* — once a value is learned, exact later occurrences of at least this length are masked anywhere, including code, logs, and JSON. Set `0` to disable exact known-entity matching.
 - **`upstreams`** — extra upstream providers, keyed by URL-prefix name. Each entry needs `base_url`; `adapter` (`"anthropic"` or `"openai"`, default `"anthropic"`), `path_prefix`, and `sse` are optional. Same shape as `--extra-upstream`; CLI flags override config entries with the same name.
 
 See [`config.json`](config.json) at the repo root for a working example.
@@ -312,7 +321,7 @@ With `--debug`, each request prints a compact diff to stderr:
 
 **What is NOT masked:** the system prompt (tool schemas and static instructions), tool definitions, and extended-thinking blocks (signatures would break). See [`SECURITY.md`](SECURITY.md) for the full threat model and known limitations.
 
-**How it works:** PII spans get stable placeholder tokens (`<PERSON_1>`, `<EMAIL_1>`, `<ADDRESS_1>`, …) stored in an in-memory mapping. The same value always maps to the same token across turns so the model stays coherent. Optionally persist this mapping to disk with `--store` (see [Persistent store](#persistent-store)). Responses are unmasked before reaching your client.
+**How it works:** PII spans get stable placeholder tokens (`<PERSON_1>`, `<EMAIL_1>`, `<ADDRESS_1>`, …) stored in an in-memory mapping. The same value always maps to the same token across turns so the model stays coherent. Once a value is learned, exact later occurrences are masked anywhere, including code, logs, and JSON; mask-cache entries computed before a value was learned are not retroactively rewritten. Optionally persist this mapping to disk with `--store` (see [Persistent store](#persistent-store)). Responses are unmasked before reaching your client.
 
 ---
 
@@ -340,7 +349,7 @@ Tool inputs and tool results are masked/unmasked just like message text, so most
 
 ### What PII does it detect?
 
-Out of the box: persons, emails, phone numbers, addresses, organizations, dates of birth, government IDs, and other categories from the openai/privacy-filter model. Add your own (SSN formats, internal employee IDs, project codenames) via the config's `patterns` section.
+Out of the box: persons, emails, phone numbers, addresses, organizations, dates of birth, government IDs, common clue-less regex shapes, secrets, and other categories from the openai/privacy-filter model. Add your own (internal employee IDs, project codenames) via the config's `patterns` section.
 
 ### What's the performance overhead?
 

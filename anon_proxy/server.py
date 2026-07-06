@@ -35,6 +35,7 @@ from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.capture import Capturer
 from anon_proxy.config import Config, load_config
+from anon_proxy.default_patterns import DEFAULT_PATTERNS
 from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
@@ -803,6 +804,15 @@ def _parse_extra_upstream(spec: str) -> tuple[str, UpstreamConfig]:
     )
 
 
+def _effective_patterns(
+    user_patterns: dict[str, str],
+    default_patterns: bool,
+) -> dict[str, str]:
+    if default_patterns:
+        return {**DEFAULT_PATTERNS, **user_patterns}
+    return dict(user_patterns)
+
+
 def main() -> None:
     import argparse
     import uvicorn
@@ -860,6 +870,29 @@ def main() -> None:
         "merge_gap (label -> chars overriding DEFAULT_MERGE_GAP_ALLOWED), "
         "ignore_labels (list of labels to skip masking on ML detections). "
         "See README.",
+    )
+    parser.add_argument(
+        "--no-default-patterns",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_NO_DEFAULT_PATTERNS", "").lower()
+        in ("1", "true", "yes"),
+        help="Disable built-in regex detectors for common PII and secrets.",
+    )
+    parser.add_argument(
+        "--canary",
+        choices=["warn", "fix", "off"],
+        default=os.environ.get("ANON_PROXY_CANARY"),
+        help="Override config canary mode: warn, fix, or off.",
+    )
+    parser.add_argument(
+        "--min-known-entity-len",
+        type=int,
+        default=(
+            int(os.environ["ANON_PROXY_MIN_KNOWN_ENTITY_LEN"])
+            if "ANON_PROXY_MIN_KNOWN_ENTITY_LEN" in os.environ
+            else None
+        ),
+        help="Override config minimum stored value length for exact matching; 0 disables.",
     )
     parser.add_argument(
         "--chunk-size",
@@ -928,10 +961,19 @@ def main() -> None:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(2)
 
+    default_patterns = cfg.default_patterns and not args.no_default_patterns
+    canary = args.canary if args.canary is not None else cfg.canary
+    min_known_entity_len = (
+        args.min_known_entity_len
+        if args.min_known_entity_len is not None
+        else cfg.min_known_entity_len
+    )
+
     extra_detectors = []
-    if cfg.patterns:
+    effective_patterns = _effective_patterns(cfg.patterns, default_patterns)
+    if effective_patterns:
         try:
-            extra_detectors.append(RegexDetector(cfg.patterns))
+            extra_detectors.append(RegexDetector(effective_patterns))
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(2)
@@ -978,6 +1020,8 @@ def main() -> None:
             store=store,
             extra_detectors=extra_detectors,
             ignore_labels=cfg.ignore_labels,
+            canary=canary,
+            min_known_entity_len=min_known_entity_len,
         )
         if (store is not None or pf is not None or extra_detectors or cfg.ignore_labels)
         else None
@@ -991,6 +1035,8 @@ def main() -> None:
                 store=store,
                 extra_detectors=extra_detectors,
                 ignore_labels=cfg.ignore_labels,
+                canary=canary,
+                min_known_entity_len=min_known_entity_len,
             )
 
         registry = MaskerRegistry(make_masker, store_dir=store_path)

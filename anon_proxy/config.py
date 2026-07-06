@@ -10,7 +10,16 @@ from anon_proxy.upstream import UpstreamConfig
 
 
 _ALLOWED_KEYS = frozenset(
-    {"patterns", "merge_gap", "ignore_labels", "system_inject", "upstreams"}
+    {
+        "patterns",
+        "merge_gap",
+        "ignore_labels",
+        "system_inject",
+        "upstreams",
+        "default_patterns",
+        "canary",
+        "min_known_entity_len",
+    }
 )
 _ALLOWED_UPSTREAM_KEYS = frozenset({"base_url", "adapter", "path_prefix", "sse"})
 _ALLOWED_ADAPTERS = frozenset({"anthropic", "openai"})
@@ -23,6 +32,9 @@ class Config:
     ignore_labels: frozenset[str] = field(default_factory=frozenset)
     system_inject: bool = True
     upstreams: dict[str, UpstreamConfig] = field(default_factory=dict)
+    default_patterns: bool = True
+    canary: str = "warn"
+    min_known_entity_len: int = 6
 
 
 def load_config(path: str | Path) -> Config:
@@ -33,6 +45,9 @@ def load_config(path: str | Path) -> Config:
           "merge_gap":     {"LABEL": "chars", ...},   # optional
           "ignore_labels": ["LABEL", ...],            # optional
           "system_inject": true,                      # optional, default true
+          "default_patterns": true,                   # optional, default true
+          "canary": "warn" | "fix" | "off",           # optional, default "warn"
+          "min_known_entity_len": 6,                  # optional, 0 disables
           "upstreams": {                              # optional extra providers
             "NAME": {
               "base_url": "https://...",              # required
@@ -66,6 +81,13 @@ def load_config(path: str | Path) -> Config:
     ignore_labels = _str_list_set(data.get("ignore_labels", []), path, "ignore_labels")
     system_inject = _bool(data.get("system_inject", True), path, "system_inject")
     upstreams = _upstreams(data.get("upstreams", {}), path)
+    default_patterns = _bool(
+        data.get("default_patterns", True), path, "default_patterns"
+    )
+    canary = _canary(data.get("canary", "warn"), path)
+    min_known_entity_len = _nonnegative_int(
+        data.get("min_known_entity_len", 6), path, "min_known_entity_len"
+    )
 
     return Config(
         patterns=patterns,
@@ -73,6 +95,9 @@ def load_config(path: str | Path) -> Config:
         ignore_labels=frozenset(normalize_label(s) for s in ignore_labels),
         system_inject=system_inject,
         upstreams=upstreams,
+        default_patterns=default_patterns,
+        canary=canary,
+        min_known_entity_len=min_known_entity_len,
     )
 
 
@@ -145,4 +170,16 @@ def _bool(value: object, path: str | Path, field: str) -> bool:
     # truthy ints/strings to avoid silently misreading a typo as "on".
     if not isinstance(value, bool):
         raise ValueError(f"{path}: {field!r} must be a JSON boolean (true/false)")
+    return value
+
+
+def _canary(value: object, path: str | Path) -> str:
+    if value not in {"warn", "fix", "off"}:
+        raise ValueError(f"{path}: 'canary' must be one of ['fix', 'off', 'warn']")
+    return str(value)
+
+
+def _nonnegative_int(value: object, path: str | Path, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{path}: {field!r} must be a non-negative integer")
     return value

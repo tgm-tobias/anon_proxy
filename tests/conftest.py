@@ -113,6 +113,8 @@ def make_masker(make_filter, store):
         ignore_labels=None,
         skip_patterns=None,
         cache_size: int = 4096,
+        canary: str = "warn",
+        min_known_entity_len: int = 6,
     ):
         f = make_filter(**(filter_kwargs or {}))
         return Masker(
@@ -122,6 +124,8 @@ def make_masker(make_filter, store):
             skip_patterns=skip_patterns if skip_patterns is not None else [],
             ignore_labels=ignore_labels,
             cache_size=cache_size,
+            canary=canary,
+            min_known_entity_len=min_known_entity_len,
         )
 
     return _make
