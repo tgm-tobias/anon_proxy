@@ -113,6 +113,7 @@ uv run python -m anon_proxy.server [options]
 | `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `mlx`) |
 | `--extra-upstream` | — | Add custom provider: `name=url[;adapter=anthropic\|openai][;path_prefix=/path]` |
 | `--store <file>` | — | Path to persistent PII mapping store. Loaded at startup; saved after each request with new entries. Enables cross-restart placeholder consistency — see [Persistent store](#persistent-store) below. |
+| `--multi-user` | off | Namespace PII stores by client credential. Requires each masking request to include `x-api-key` or `authorization`; with `--store`, the path is treated as a directory. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |
 | `--config <file>` | — | Unified `config.json` (extra regex patterns, per-label merge-gap overrides, ML labels to skip masking on). See [Config file](#config-file) below. |
 | `--chunk-size <N>` | `6000` | Max chars per model inference chunk — lower values reduce peak VRAM |
@@ -199,6 +200,27 @@ The store is a flat JSON file — human-readable, easy to inspect, backup, or pr
 Writes are atomic (written to a `.tmp` file, then renamed) and offloaded to a thread pool so they never block the event loop. If a write fails (disk full, permissions), the error is logged to stderr and the request completes normally — the mapping survives in memory and will be retried on the next write.
 
 Also settable via `ANON_PROXY_STORE` environment variable.
+
+### Multi-user deployments
+
+Single-user mode uses one shared placeholder store for the whole proxy process.
+That is right for a local developer proxy, but unsafe for a shared deployment:
+any client that can send `<PERSON_1>` could otherwise learn another client's
+mapping if the response is unmasked through the same store.
+
+Use `--multi-user` when multiple clients share one proxy:
+
+```bash
+uv run python -m anon_proxy.server --multi-user --store /data/pii-stores
+```
+
+In multi-user mode, anon-proxy derives a client namespace from the upstream
+credential in `x-api-key` or `authorization`. Requests that need masking and
+do not include either header fail closed with `401`.
+
+With `--store`, the path is a directory. Each client gets its own
+`<client_id>.json` file, where `client_id` is the first 16 hex characters of a
+SHA-256 hash of the credential. The credential itself is never written to disk.
 
 ## Docker
 

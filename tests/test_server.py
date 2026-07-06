@@ -16,9 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from starlette.testclient import TestClient
 
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.mapping import PIIStore
+from anon_proxy.masker import Masker
+from anon_proxy.registry import MaskerRegistry
 from anon_proxy.server import (
     _extract_usage,
     build_app,
@@ -27,6 +30,8 @@ from anon_proxy.server import (
     _upstream_request,
     _write_store_json,
 )
+from anon_proxy.upstream import UpstreamConfig
+from tests.conftest import span
 
 
 # ---------------------------------------------------------------------------
@@ -69,9 +74,6 @@ class TestWriteStoreJson:
 # _maybe_save_store (the async gate)
 # ---------------------------------------------------------------------------
 
-# Helper to build the lightweight state object ``_maybe_save_store`` expects.
-_state = SimpleNamespace  # alias for compact tests
-
 
 class TestMaybeSaveStore:
     async def test_saves_when_store_grew(self, tmp_path):
@@ -80,7 +82,8 @@ class TestMaybeSaveStore:
         store.get_or_create("PERSON", "Alice")
 
         await _maybe_save_store(
-            _state(store_path=store_path, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            store_path,
             store_before=0,
         )
         assert os.path.exists(store_path)
@@ -93,7 +96,8 @@ class TestMaybeSaveStore:
 
         # store_before=1 means "the store already had 1 entry before the request"
         await _maybe_save_store(
-            _state(store_path=store_path, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            store_path,
             store_before=1,
         )
         assert not os.path.exists(store_path)
@@ -103,7 +107,8 @@ class TestMaybeSaveStore:
         store.get_or_create("PERSON", "Alice")
 
         await _maybe_save_store(
-            _state(store_path=None, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            None,
             store_before=0,
         )
         # Should not raise and should not create anything
@@ -115,7 +120,8 @@ class TestMaybeSaveStore:
         # First request — one new entry
         store.get_or_create("PERSON", "Alice")
         await _maybe_save_store(
-            _state(store_path=store_path, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            store_path,
             store_before=0,
         )
         assert PIIStore.load(store_path).original("<PERSON_1>") == "Alice"
@@ -123,7 +129,8 @@ class TestMaybeSaveStore:
         # Second request — another entry
         store.get_or_create("EMAIL", "a@b.com")
         await _maybe_save_store(
-            _state(store_path=store_path, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            store_path,
             store_before=1,
         )
         loaded = PIIStore.load(store_path)
@@ -137,10 +144,97 @@ class TestMaybeSaveStore:
         store.get_or_create("PERSON", "Alice")
 
         await _maybe_save_store(
-            _state(store_path=store_path, masker=_state(store=store)),
+            SimpleNamespace(store=store),
+            store_path,
             store_before=0,
         )
         # Should not raise
+
+
+# ====================================================================# _should_mask_request
+# =============================================================# ---------------------------------------------------------------------------
+# build_app multi-user masking
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_echo_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"content": [{"type": "text", "text": "Hello <PERSON_1>"}]},
+        headers={"content-type": "application/json"},
+        request=httpx.Request("POST", "https://upstream.example/v1/messages"),
+    )
+
+
+class TestMultiUserProxy:
+    def test_multi_user_requires_credential(self, make_filter):
+        registry = MaskerRegistry(
+            lambda store: Masker(filter=make_filter(), store=store),
+            store_dir=None,
+        )
+        app = build_app(registry=registry)
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/anthropic/v1/messages",
+                json={
+                    "model": "claude",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+
+        assert resp.status_code == 401
+        assert "x-api-key" in resp.json()["error"]
+
+    def test_multi_user_clients_are_isolated(self, make_filter, fake_pipeline):
+        fake_pipeline.set("I am Alice", [span("private_person", 5, 10, word="Alice")])
+        registry = MaskerRegistry(
+            lambda store: Masker(filter=make_filter(), store=store),
+            store_dir=None,
+        )
+        app = build_app(
+            registry=registry,
+            extra_upstreams={
+                "stub": UpstreamConfig(
+                    name="stub",
+                    base_url="https://upstream.example",
+                    path_prefix="",
+                    adapter="anthropic",
+                    sse=True,
+                )
+            },
+            system_inject=False,
+        )
+
+        with patch(
+            "anon_proxy.server._upstream_request",
+            AsyncMock(
+                side_effect=[_anthropic_echo_response(), _anthropic_echo_response()]
+            ),
+        ):
+            with TestClient(app) as client:
+                resp_a = client.post(
+                    "/stub/v1/messages",
+                    headers={"x-api-key": "A"},
+                    json={
+                        "model": "claude",
+                        "messages": [{"role": "user", "content": "I am Alice"}],
+                    },
+                )
+                resp_b = client.post(
+                    "/stub/v1/messages",
+                    headers={"x-api-key": "B"},
+                    json={
+                        "model": "claude",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+
+        assert resp_a.status_code == 200
+        assert resp_b.status_code == 200
+        assert resp_a.json()["content"][0]["text"] == "Hello Alice"
+        assert resp_b.json()["content"][0]["text"] == "Hello <PERSON_1>"
+
 
 
 # ====================================================================# _should_mask_request
@@ -194,7 +288,6 @@ class TestShouldMaskRequest:
 
 # ====================================================================# _upstream_request
 # ====================================================================
-
 
 def _mock_response(status_code=200, headers=None):
     """Build a minimal object shaped like an httpx.Response for mocking."""

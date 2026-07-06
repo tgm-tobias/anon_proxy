@@ -60,9 +60,11 @@ will pass raw bytes through.
 
 These are not bugs anon-proxy claims to defend against:
 
-- **A malicious local user.** anon-proxy runs on your machine and trusts the
-  user running it. Anyone with shell access to the host can read the in-memory
-  store, inspect uvicorn logs, or just set `--debug`.
+- **Host operator access.** Single-user mode assumes one trust domain: anyone
+  who can send requests through that proxy shares one placeholder store.
+  `--multi-user` isolates unmask access per upstream credential, but anyone
+  with shell access to the host can still read in-memory stores, inspect
+  uvicorn logs, or set `--debug`.
 - **Side channels.** Request length, latency, and traffic shape are not
   obscured. An upstream provider observing many proxied requests can still
   infer aggregate properties.
@@ -103,8 +105,8 @@ security reports for these — they are open trade-offs:
 
 If you run anon-proxy on multi-user hardware or expose it on a LAN
 (`--host 0.0.0.0`), you are widening the trust boundary beyond a single user.
-The proxy has no authentication of its own — it forwards client auth headers
-unchanged. Put your own auth in front of it (firewall, mTLS, an
+Use `--multi-user` so each upstream credential gets an isolated placeholder
+store, and put your own auth in front of the proxy (firewall, mTLS, an
 authenticating reverse proxy) before exposing it beyond `127.0.0.1`.
 
 When in doubt, run with `--debug` once on representative traffic and read the

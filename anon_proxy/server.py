@@ -38,6 +38,7 @@ from anon_proxy.config import Config, load_config
 from anon_proxy.mapping import PIIStore
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
+from anon_proxy.registry import MaskerRegistry, client_id
 from anon_proxy.regex_detector import RegexDetector
 from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
@@ -295,6 +296,7 @@ _SKIP_RESPONSE_HEADERS = {
 
 def build_app(
     masker: Masker | None = None,
+    registry: MaskerRegistry | None = None,
     extra_upstreams: dict[str, UpstreamConfig] | None = None,
     debug: bool = False,
     metrics: bool = False,
@@ -306,6 +308,7 @@ def build_app(
 
     Args:
         masker: PII masker instance (created if None)
+        registry: Optional per-client masker registry for multi-user mode
         extra_upstreams: Additional upstream providers configured via CLI
         debug: Enable debug logging
         metrics: Enable per-turn latency logging
@@ -314,7 +317,8 @@ def build_app(
             to outbound requests so upstream models echo `<LABEL_N>` tokens
             verbatim instead of hallucinating fill-in values
     """
-    masker = masker or Masker()
+    if registry is None:
+        masker = masker or Masker()
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
 
     @asynccontextmanager
@@ -324,6 +328,7 @@ def build_app(
         ) as client:
             app.state.client = client
             app.state.masker = masker
+            app.state.registry = registry
             app.state.debug = debug
             app.state.metrics = metrics
             app.state.capture = capture
@@ -398,7 +403,6 @@ async def _handle_proxy(
 ) -> Response:
     """Handle a proxied request."""
     client: httpx.AsyncClient = request.app.state.client
-    masker: Masker = request.app.state.masker
     debug: bool = request.app.state.debug
     metrics: bool = request.app.state.metrics
     capture: Capturer | None = request.app.state.capture
@@ -439,6 +443,25 @@ async def _handle_proxy(
 
     if not should_mask:
         return await _passthrough(request, upstream_url, body_override=raw_body)
+
+    registry: MaskerRegistry | None = request.app.state.registry
+    if registry is not None:
+        cid = client_id(request.headers)
+        if cid is None:
+            return Response(
+                content=json.dumps(
+                    {
+                        "error": "multi-user mode requires an x-api-key or authorization header"
+                    }
+                ),
+                status_code=401,
+                media_type="application/json",
+            )
+        masker = registry.get(cid)
+        store_save_path = registry.store_path(cid)
+    else:
+        masker = request.app.state.masker
+        store_save_path = request.app.state.store_path
 
     # Mask the request
     store_before = len(masker.store)
@@ -526,7 +549,7 @@ async def _handle_proxy(
                         yield out
                     if calls is not None:
                         stream_calls = list(calls)
-                await _maybe_save_store(request.app.state, store_before)
+                await _maybe_save_store(masker, store_save_path, store_before)
             finally:
                 if debug:
                     _log_stream_substitutions(substitutions)
@@ -637,7 +660,7 @@ async def _handle_proxy(
                         },
                     }
                 )
-            await _maybe_save_store(request.app.state, store_before)
+            await _maybe_save_store(masker, store_save_path, store_before)
             return Response(
                 content=json.dumps(unmasked),
                 status_code=upstream_resp.status_code,
@@ -669,15 +692,17 @@ def _write_store_json(path: str, data: dict) -> None:
     os.replace(tmp, path)
 
 
-async def _maybe_save_store(app_state, store_before: int) -> None:
+async def _maybe_save_store(
+    masker: Masker,
+    store_path: str | None,
+    store_before: int,
+) -> None:
     """Write the PII store to disk if it was modified this request.
 
     I/O is offloaded to a thread so the event loop is never blocked.
     """
-    store_path: str | None = getattr(app_state, "store_path", None)
     if store_path is None:
         return
-    masker: Masker = app_state.masker
     if len(masker.store) > store_before:
         data = masker.store.to_dict()
         try:
@@ -823,6 +848,14 @@ def main() -> None:
         "placeholder tokens.",
     )
     parser.add_argument(
+        "--multi-user",
+        action="store_true",
+        default=os.environ.get("ANON_PROXY_MULTI_USER", "").lower()
+        in ("1", "true", "yes"),
+        help="Namespace PII stores per client credential. In this mode --store "
+        "is treated as a directory containing one <client_id>.json file per client.",
+    )
+    parser.add_argument(
         "--config",
         default=os.environ.get("ANON_PROXY_CONFIG"),
         metavar="PATH",
@@ -923,7 +956,7 @@ def main() -> None:
 
     # Load persistent PII store if requested.
     store_path: str | None = args.store
-    if store_path:
+    if store_path and not args.multi_user:
         try:
             store = PIIStore.load(store_path)
             print(
@@ -941,6 +974,7 @@ def main() -> None:
     else:
         store = None
 
+    registry = None
     masker = (
         Masker(
             filter=pf,
@@ -951,6 +985,19 @@ def main() -> None:
         if (store is not None or pf is not None or extra_detectors or cfg.ignore_labels)
         else None
     )
+    if args.multi_user:
+        shared_filter = pf or PrivacyFilter()
+
+        def make_masker(store: PIIStore) -> Masker:
+            return Masker(
+                filter=shared_filter,
+                store=store,
+                extra_detectors=extra_detectors,
+                ignore_labels=cfg.ignore_labels,
+            )
+
+        registry = MaskerRegistry(make_masker, store_dir=store_path)
+        masker = None
 
     capturer: Capturer | None = None
     if args.capture:
@@ -970,6 +1017,7 @@ def main() -> None:
 
     app = build_app(
         masker=masker,
+        registry=registry,
         extra_upstreams=extra_upstreams,
         debug=args.debug,
         metrics=args.metrics,
@@ -987,6 +1035,7 @@ def main() -> None:
         f"  metrics: {args.metrics}\n"
         f"  capture: {args.capture or '(off)'}\n"
         f"  store: {args.store or '(none)'}\n"
+        f"  multi_user: {args.multi_user}\n"
         f"  config: {args.config or '(None)'}\n"
         f"  system_inject: {system_inject}\n"
         f"  backend: {backend_display}\n"
