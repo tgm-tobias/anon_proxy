@@ -29,10 +29,11 @@ DEFAULT_MERGE_GAP_ALLOWED: dict[str, str] = {
     "LOCATION": " \t\n,.-",
 }
 
-# Backends. "auto"/"torch"/"cpu"/"mps" all run the torch HF pipeline (cpu/mps
-# just pin the device); "onnx" loads the pre-quantized graph the model repo
-# already ships and runs it through ONNX Runtime. The torch path is unchanged.
-Backend = Literal["auto", "torch", "cpu", "mps", "onnx"]
+# Backends. "auto"/"torch"/"cpu"/"mps"/"cuda" all run the torch HF pipeline
+# (cpu/mps/cuda pin the device); "onnx" loads the pre-quantized graph the model
+# repo already ships and runs it through ONNX Runtime. The torch path is
+# unchanged apart from "auto" now honoring an available CUDA GPU.
+Backend = Literal["auto", "torch", "cpu", "mps", "cuda", "onnx"]
 
 # Upstream ships this pre-quantized export in the model repo; we load it, never
 # convert. q4f16 is the smallest (~0.77 GB) and the parity/bench winner.
@@ -134,17 +135,15 @@ def _build_pipeline(
 ):
     """Construct the callable that `detect()` invokes once per chunk.
 
-    torch/auto/cpu/mps → the HF token-classification pipeline (unchanged).
+    torch/auto/cpu/mps/cuda → the HF token-classification pipeline.
     onnx → the ONNX Runtime classifier, exposing the same call surface.
     """
-    if backend in ("auto", "torch", "cpu", "mps"):
-        if backend in ("cpu", "mps") and device is None:
-            device = backend
+    if backend in ("auto", "torch", "cpu", "mps", "cuda"):
         return pipeline(
             task="token-classification",
             model=model_id,
             aggregation_strategy=aggregation_strategy,
-            device=device,
+            device=_resolve_torch_device(backend, device),
         )
     if backend == "onnx":
         if device is not None:
@@ -152,8 +151,32 @@ def _build_pipeline(
         return _load_onnx_classifier(model_id=model_id, provider=onnx_provider)
     raise ValueError(
         f"unsupported backend {backend!r}; expected one of "
-        "'auto', 'torch', 'cpu', 'mps', 'onnx'"
+        "'auto', 'torch', 'cpu', 'mps', 'cuda', 'onnx'"
     )
+
+
+def _resolve_torch_device(backend: str, device: int | str | None):
+    """Pick the device for the torch pipeline.
+
+    An explicit `device` always wins. cpu/mps/cuda map to themselves.
+    'auto'/'torch' select an available CUDA GPU and otherwise fall back to CPU
+    (device=None) — MPS is deliberately NOT auto-selected: for this model it is
+    ~1.5x slower than CPU (per-sequence-length kernel recompiles), so it stays
+    opt-in via `--backend mps`.
+    """
+    if device is not None:
+        return device
+    if backend in ("cpu", "mps", "cuda"):
+        return backend
+    # auto / torch
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except ImportError:  # pragma: no cover - torch is a base dep
+        pass
+    return None
 
 
 def _load_onnx_classifier(*, model_id: str, provider: str):

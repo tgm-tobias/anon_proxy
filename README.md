@@ -110,7 +110,7 @@ uv run python -m anon_proxy.server [options]
 |---|---|---|
 | `--host` | `127.0.0.1` | Bind address (`0.0.0.0` to expose on LAN) |
 | `--port` | `8080` | Listen port |
-| `--backend` | `auto` | PII detection backend (`auto`, `cpu`, `mps`, `onnx`). `onnx` runs the pre-quantized q4f16 export via ONNX Runtime — much faster on CPU; needs `uv sync --extra onnx`. See [Fast ONNX backend](#fast-onnx-backend). |
+| `--backend` | `auto` | PII detection backend. `auto` uses a CUDA GPU if present, else CPU. `cuda`/`cpu`/`mps` pin the torch device (`mps` is not auto-picked — it is slower than CPU for this model). `onnx` runs the pre-quantized q4f16 export via ONNX Runtime — much faster on CPU; needs `uv sync --extra onnx`. See [Fast ONNX backend](#fast-onnx-backend). |
 | `--extra-upstream` | — | Add custom provider: `name=url[;adapter=anthropic\|openai][;path_prefix=/path]` |
 | `--store <file>` | — | Path to persistent PII mapping store. Loaded at startup; saved after each request with new entries. Enables cross-restart placeholder consistency — see [Persistent store](#persistent-store) below. |
 | `--debug` | off | Log new store entries and masked/unmasked diffs to stderr |

@@ -835,10 +835,12 @@ def _build_parser():
     parser.add_argument(
         "--backend",
         default=os.environ.get("ANON_PROXY_BACKEND", "auto"),
-        choices=["auto", "cpu", "mps", "onnx"],
-        help="PII detection backend (default: auto-detect best available). "
-        "'onnx' runs the pre-quantized q4f16 export via ONNX Runtime "
-        "(much faster on CPU; needs `uv sync --extra onnx`).",
+        choices=["auto", "cpu", "mps", "cuda", "onnx"],
+        help="PII detection backend. 'auto' uses a CUDA GPU if present, else "
+        "CPU. 'cuda'/'cpu'/'mps' pin the torch device (mps is not auto-picked "
+        "— it is slower than CPU for this model). 'onnx' runs the pre-quantized "
+        "q4f16 export via ONNX Runtime (much faster on CPU; needs "
+        "`uv sync --extra onnx`).",
     )
     parser.add_argument(
         "--no-system-inject",

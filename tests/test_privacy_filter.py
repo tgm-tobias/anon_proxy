@@ -458,21 +458,42 @@ class TestBackendDispatch:
         with pytest.raises(ValueError, match="device is only valid"):
             self._build(backend="onnx", device="cpu")
 
-    def test_cpu_backend_pins_device(self, monkeypatch):
+    def test_cpu_and_cuda_backends_pin_device(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr(
             privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
         )
         assert self._build(backend="cpu") == "PIPE"
         assert captured["device"] == "cpu"
+        self._build(backend="cuda")
+        assert captured["device"] == "cuda"
 
-    def test_auto_backend_leaves_device_none(self, monkeypatch):
+    def test_auto_falls_back_to_cpu_without_cuda(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr(
             privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
         )
+        monkeypatch.setattr("torch.cuda.is_available", lambda: False)
         self._build(backend="auto")
+        # None == torch's default CPU device: byte-identical to the old 'auto'.
         assert captured["device"] is None
+
+    def test_auto_uses_cuda_when_available(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        self._build(backend="auto")
+        assert captured["device"] == "cuda"
+
+    def test_explicit_device_overrides_backend(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        self._build(backend="auto", device="cuda:1")
+        assert captured["device"] == "cuda:1"
 
     def test_onnx_dispatches_to_loader(self, monkeypatch):
         seen: dict = {}

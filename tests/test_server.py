@@ -384,9 +384,10 @@ class TestBackendFlag:
         args = _build_parser().parse_args(["--backend", "onnx"])
         assert args.backend == "onnx"
 
-    def test_cpu_and_mps_still_accepted(self):
+    def test_cpu_mps_cuda_accepted(self):
         assert _build_parser().parse_args(["--backend", "cpu"]).backend == "cpu"
         assert _build_parser().parse_args(["--backend", "mps"]).backend == "mps"
+        assert _build_parser().parse_args(["--backend", "cuda"]).backend == "cuda"
 
     def test_mlx_backend_rejected(self, capsys):
         # --backend mlx advertised an MLX backend that never existed; the raw
