@@ -1,3 +1,4 @@
+import atexit
 import sys
 
 from anon_proxy.menubar.supervisor import (
@@ -34,6 +35,20 @@ def test_start_is_idempotent_while_running():
     sup.start()
     assert sup._proc.pid == pid
     sup.stop(grace=2.0)
+
+
+def test_atexit_handler_stops_running_child(monkeypatch):
+    handlers = []
+    monkeypatch.setattr(atexit, "register", lambda fn: handlers.append(fn))
+    sup = ProxySupervisor(cmd=[sys.executable, "-c", "import time; time.sleep(30)"])
+    assert sup.stop in handlers
+    sup.start()
+    assert sup.is_running()
+
+    for fn in handlers:
+        fn()
+
+    assert not sup.is_running()
 
 
 def test_plist_contains_label_and_args():

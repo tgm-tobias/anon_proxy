@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ class ProxySupervisor:
     def __init__(self, cmd: list[str] | None = None) -> None:
         self._cmd = cmd or [sys.executable, "-m", "anon_proxy.server"]
         self._proc: subprocess.Popen | None = None
+        atexit.register(self.stop)
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None

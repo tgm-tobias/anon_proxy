@@ -1,6 +1,6 @@
 import json
 
-from anon_proxy.metrics import ProxyMetrics
+from anon_proxy.metrics import _MAX_CLIENTS, _OVERFLOW_LABEL, ProxyMetrics
 
 
 def test_record_request_counts_and_attributes():
@@ -78,3 +78,39 @@ def test_snapshot_is_json_safe_and_has_no_content_fields():
         "last_client",
         "by_client",
     }
+
+
+def test_by_client_is_capped_under_label_churn():
+    m = ProxyMetrics()
+    for i in range(_MAX_CLIENTS + 500):
+        m.record_request(f"agent-{i}", 1)
+
+    snap = m.snapshot()
+
+    assert len(snap["by_client"]) <= _MAX_CLIENTS + 1
+    assert _OVERFLOW_LABEL in snap["by_client"]
+    assert snap["requests_masked_total"] == _MAX_CLIENTS + 500
+
+
+def test_overflow_requests_aggregate_into_other():
+    m = ProxyMetrics()
+    for i in range(_MAX_CLIENTS):
+        m.record_request(f"seed-{i}", 1)
+    m.record_request("late-1", 1)
+    m.record_request("late-2", 1)
+    m.record_tokens("late-3", 10)
+
+    other = m.snapshot()["by_client"][_OVERFLOW_LABEL]
+
+    assert other["requests"] == 2
+    assert other["tokens"] == 10
+
+
+def test_known_client_still_updates_after_cap_reached():
+    m = ProxyMetrics()
+    m.record_request("claude-code", 1)
+    for i in range(_MAX_CLIENTS + 50):
+        m.record_request(f"noise-{i}", 1)
+    m.record_request("claude-code", 1)
+
+    assert m.snapshot()["by_client"]["claude-code"]["requests"] == 2
