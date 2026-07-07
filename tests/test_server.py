@@ -23,6 +23,7 @@ from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker
 from anon_proxy.registry import MaskerRegistry
 from anon_proxy.server import (
+    _build_parser,
     _effective_patterns,
     _extract_usage,
     build_app,
@@ -450,3 +451,32 @@ class TestExtractUsage:
 
     def test_no_usage_returns_none(self):
         assert _extract_usage({}) is None
+
+
+# ---------------------------------------------------------------------------
+# --backend flag: mlx removed (crashing, never implemented), onnx added.
+# ---------------------------------------------------------------------------
+
+
+class TestBackendFlag:
+    def test_onnx_backend_accepted(self):
+        args = _build_parser().parse_args(["--backend", "onnx"])
+        assert args.backend == "onnx"
+
+    def test_cpu_mps_cuda_accepted(self):
+        assert _build_parser().parse_args(["--backend", "cpu"]).backend == "cpu"
+        assert _build_parser().parse_args(["--backend", "mps"]).backend == "mps"
+        assert _build_parser().parse_args(["--backend", "cuda"]).backend == "cuda"
+
+    def test_mlx_backend_rejected(self, capsys):
+        # --backend mlx advertised an MLX backend that never existed; the raw
+        # string reached torch as a device and crashed at startup. argparse
+        # must now reject it with a clear choices error (issue #15).
+        with pytest.raises(SystemExit) as exc:
+            _build_parser().parse_args(["--backend", "mlx"])
+        assert exc.value.code == 2
+        assert "invalid choice: 'mlx'" in capsys.readouterr().err
+
+    def test_mlx_weights_cache_flag_removed(self):
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--mlx-weights-cache", "/tmp/x"])
