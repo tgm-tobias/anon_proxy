@@ -34,14 +34,17 @@ from starlette.routing import Route
 from anon_proxy.adapters import anthropic as anthropic_adapter
 from anon_proxy.adapters import openai as openai_adapter
 from anon_proxy.capture import Capturer
+from anon_proxy.client_id import classify_client
 from anon_proxy.config import Config, load_config
 from anon_proxy.default_patterns import DEFAULT_PATTERNS
 from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker, telemetry_scope
+from anon_proxy.metrics import ProxyMetrics
 from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
 from anon_proxy.registry import MaskerRegistry, client_id
 from anon_proxy.regex_detector import RegexDetector
 from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
+from anon_proxy.tokens import approx_tokens_from_text, extract_output_tokens
 from anon_proxy.upstream import BUILT_IN_UPSTREAMS, UpstreamConfig, get_upstream_config
 
 _DIM = "\033[2m"
@@ -300,10 +303,14 @@ def build_app(
     registry: MaskerRegistry | None = None,
     extra_upstreams: dict[str, UpstreamConfig] | None = None,
     debug: bool = False,
-    metrics: bool = False,
+    metrics: bool | ProxyMetrics = False,
     capture: Capturer | None = None,
     system_inject: bool = True,
     store_path: str | None = None,
+    proxy_metrics: ProxyMetrics | None = None,
+    backend: str = "auto",
+    listen_addr: str | None = None,
+    http_client: httpx.AsyncClient | None = None,
 ) -> Starlette:
     """Build the Starlette application.
 
@@ -312,35 +319,69 @@ def build_app(
         registry: Optional per-client masker registry for multi-user mode
         extra_upstreams: Additional upstream providers configured via CLI
         debug: Enable debug logging
-        metrics: Enable per-turn latency logging
+        metrics: Enable per-turn latency logging, or inject ProxyMetrics for
+            backward-compatible status endpoint tests.
         capture: Optional Capturer that records each turn's request/response and timing
         system_inject: If True, prepend a placeholder-explainer system prompt
             to outbound requests so upstream models echo `<LABEL_N>` tokens
             verbatim instead of hallucinating fill-in values
+        proxy_metrics: Activity metrics accumulator (created if None).
+        backend: PII backend label, surfaced on /_status.
+        listen_addr: "host:port" label, surfaced on /_status.
+        http_client: Injected AsyncClient for tests; a fresh one is made if None.
     """
     if registry is None:
         masker = masker or Masker()
+    if isinstance(metrics, ProxyMetrics):
+        proxy_metrics = metrics
+        latency_metrics = False
+    else:
+        latency_metrics = metrics
+    proxy_metrics = proxy_metrics or ProxyMetrics()
     all_upstreams = {**BUILT_IN_UPSTREAMS, **(extra_upstreams or {})}
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        async with httpx.AsyncClient(
+        owns_client = http_client is None
+        client = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(600.0, connect=10.0)
-        ) as client:
+        )
+        try:
             app.state.client = client
             app.state.masker = masker
             app.state.registry = registry
             app.state.debug = debug
-            app.state.metrics = metrics
+            app.state.latency_metrics = latency_metrics
+            app.state.metrics = proxy_metrics
             app.state.capture = capture
             app.state.upstreams = all_upstreams
             app.state.system_inject = system_inject
             app.state.store_path = store_path
-            try:
-                yield
-            finally:
-                if capture is not None:
-                    capture.close()
+            app.state.backend = backend
+            app.state.listen_addr = listen_addr
+            yield
+        finally:
+            if capture is not None:
+                capture.close()
+            if owns_client:
+                await client.aclose()
+
+    async def status_endpoint(request: Request) -> Response:
+        st = request.app.state
+        snap = st.metrics.snapshot()
+        snap.update(
+            {
+                "status": "running",
+                "listen_addr": st.listen_addr,
+                "providers": sorted(st.upstreams.keys()),
+                "backend": st.backend,
+                "store": len(st.masker.store),
+            }
+        )
+        return Response(
+            content=json.dumps(snap, indent=2),
+            media_type="application/json",
+        )
 
     async def dispatch(request: Request) -> Response:
         """Dispatch request based on provider prefix."""
@@ -388,6 +429,7 @@ def build_app(
         return await _handle_proxy(request, upstream_config, adapter)
 
     routes = [
+        Route("/_status", status_endpoint, methods=["GET"]),
         Route(
             "/{path:path}",
             dispatch,
@@ -405,7 +447,9 @@ async def _handle_proxy(
     """Handle a proxied request."""
     client: httpx.AsyncClient = request.app.state.client
     debug: bool = request.app.state.debug
-    metrics: bool = request.app.state.metrics
+    latency_metrics: bool = request.app.state.latency_metrics
+    proxy_metrics: ProxyMetrics = request.app.state.metrics
+    client_label = classify_client({k.lower(): v for k, v in request.headers.items()})
     capture: Capturer | None = request.app.state.capture
     t_start = time.perf_counter()
     upstream_acc: list[float] = [0.0]
@@ -468,14 +512,30 @@ async def _handle_proxy(
     store_before = len(masker.store)
     mask_request_ms: float | None = None
     mask_calls: list = []
-    if capture is not None:
-        with telemetry_scope() as calls:
-            t_mask = time.perf_counter()
+    try:
+        if capture is not None:
+            with telemetry_scope() as calls:
+                t_mask = time.perf_counter()
+                masked = await asyncio.to_thread(adapter.mask_request, body, masker)
+                mask_request_ms = (time.perf_counter() - t_mask) * 1000
+                mask_calls = list(calls)
+        else:
             masked = await asyncio.to_thread(adapter.mask_request, body, masker)
-            mask_request_ms = (time.perf_counter() - t_mask) * 1000
-            mask_calls = list(calls)
-    else:
-        masked = await asyncio.to_thread(adapter.mask_request, body, masker)
+    except Exception:
+        _safe_metric(proxy_metrics.record_masking_error)
+        print("error: masking failed; refusing to forward unmasked", file=sys.stderr)
+        return Response(
+            content=json.dumps(
+                {"error": "anon-proxy: masking failed; request blocked"}
+            ),
+            status_code=502,
+            media_type="application/json",
+        )
+    _safe_metric(
+        proxy_metrics.record_request,
+        client_label,
+        len(masker.store) - store_before,
+    )
     if debug:
         new_entries = masker.store.items()[store_before:]
         _log_request(upstream_config.name, api_path, body, masked, new_entries)
@@ -519,6 +579,7 @@ async def _handle_proxy(
             # For streaming, track substitutions for debug logging
             substitutions: dict[str, str] = {}
             usage_acc: list[dict] = []
+            approx_chars = 0
 
             def track_substitution(upstream: str, client: str):
                 """Track placeholder → unmasked substitutions."""
@@ -547,6 +608,7 @@ async def _handle_proxy(
                     ):
                         if downstream_byte_acc is not None:
                             downstream_byte_acc.append(out)
+                        approx_chars += len(out.decode("utf-8", "ignore"))
                         yield out
                     if calls is not None:
                         stream_calls = list(calls)
@@ -554,7 +616,22 @@ async def _handle_proxy(
             finally:
                 if debug:
                     _log_stream_substitutions(substitutions)
-                if metrics:
+                if usage_acc:
+                    merged = {}
+                    for usage_chunk in usage_acc:
+                        merged.update(usage_chunk)
+                    n_out = extract_output_tokens(
+                        upstream_config.adapter, {"usage": merged}
+                    )
+                    if n_out:
+                        _safe_metric(proxy_metrics.record_tokens, client_label, n_out)
+                else:
+                    _safe_metric(
+                        proxy_metrics.record_tokens,
+                        client_label,
+                        approx_tokens_from_text("x" * approx_chars),
+                    )
+                if latency_metrics:
                     usage = None
                     if usage_acc:
                         merged = {}
@@ -635,7 +712,10 @@ async def _handle_proxy(
                 unmasked = adapter.unmask_response(resp_json, masker)
             if debug:
                 _log_response(resp_json, unmasked)
-            if metrics:
+            n_out = extract_output_tokens(upstream_config.adapter, resp_json)
+            if n_out:
+                _safe_metric(proxy_metrics.record_tokens, client_label, n_out)
+            if latency_metrics:
                 _log_metrics(
                     upstream_config.name,
                     time.perf_counter() - t_start,
@@ -669,7 +749,7 @@ async def _handle_proxy(
                 media_type="application/json",
             )
 
-    if metrics:
+    if latency_metrics:
         _log_metrics(
             upstream_config.name, time.perf_counter() - t_start, upstream_acc[0]
         )
@@ -679,6 +759,13 @@ async def _handle_proxy(
         headers=_filter_response_headers(upstream_resp.headers),
         media_type=content_type or None,
     )
+
+
+def _safe_metric(fn, *args) -> None:
+    try:
+        fn(*args)
+    except Exception as e:
+        print(f"error: proxy metrics failed: {e}", file=sys.stderr)
 
 
 async def _maybe_save_store(
@@ -1058,6 +1145,9 @@ def main() -> None:
         capture=capturer,
         system_inject=system_inject,
         store_path=store_path,
+        proxy_metrics=ProxyMetrics(),
+        backend=args.backend,
+        listen_addr=f"{args.host}:{args.port}",
     )
 
     all_providers = sorted({**BUILT_IN_UPSTREAMS, **extra_upstreams}.keys())
@@ -1073,6 +1163,7 @@ def main() -> None:
         f"  config: {args.config or '(None)'}\n"
         f"  system_inject: {system_inject}\n"
         f"  backend: {backend_display}\n"
+        f"  status: http://{args.host}:{args.port}/_status\n"
         f"\nUsage examples:\n"
         f"  Anthropic: base_url=http://{args.host}:{args.port}/anthropic\n"
         f"  OpenAI:   base_url=http://{args.host}:{args.port}/openai\n"
