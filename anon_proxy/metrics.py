@@ -11,6 +11,8 @@ import threading
 import time
 
 _TAU = 3.0
+_MAX_CLIENTS = 64
+_OVERFLOW_LABEL = "other"
 
 
 class ProxyMetrics:
@@ -29,9 +31,15 @@ class ProxyMetrics:
 
     def _client(self, label: str) -> dict[str, int]:
         client = self.by_client.get(label)
-        if client is None:
-            client = {"requests": 0, "tokens": 0}
-            self.by_client[label] = client
+        if client is not None:
+            return client
+        if len(self.by_client) >= _MAX_CLIENTS:
+            label = _OVERFLOW_LABEL
+            client = self.by_client.get(label)
+            if client is not None:
+                return client
+        client = {"requests": 0, "tokens": 0}
+        self.by_client[label] = client
         return client
 
     def record_request(
