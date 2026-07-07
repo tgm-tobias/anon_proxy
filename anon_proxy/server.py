@@ -40,7 +40,11 @@ from anon_proxy.default_patterns import DEFAULT_PATTERNS
 from anon_proxy.mapping import PIIStore, atomic_write_json
 from anon_proxy.masker import Masker, telemetry_scope
 from anon_proxy.metrics import ProxyMetrics
-from anon_proxy.privacy_filter import DEFAULT_CHUNK_SIZE, PrivacyFilter
+from anon_proxy.privacy_filter import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_ONNX_PROVIDER,
+    PrivacyFilter,
+)
 from anon_proxy.registry import MaskerRegistry, client_id
 from anon_proxy.regex_detector import RegexDetector
 from anon_proxy.system_prompt import PLACEHOLDER_SYSTEM_PROMPT
@@ -891,9 +895,8 @@ def _effective_patterns(
     return dict(user_patterns)
 
 
-def main() -> None:
+def _build_parser():
     import argparse
-    import uvicorn
 
     parser = argparse.ArgumentParser(
         description="anon-proxy — PII masking proxy for LLM APIs"
@@ -990,13 +993,17 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         default=os.environ.get("ANON_PROXY_BACKEND", "auto"),
-        choices=["auto", "cpu", "mps", "mlx"],
-        help="PII detection backend (default: auto-detect best available).",
+        choices=["auto", "torch", "cpu", "mps", "cuda", "onnx"],
+        help="PII detection backend. 'auto' uses a CUDA GPU if present, else "
+        "CPU. 'torch' is the torch pipeline with auto device selection. "
+        "'cuda'/'cpu'/'mps' pin the torch device (mps is not auto-picked — it "
+        "is slower than CPU for this model). 'onnx' runs the pre-quantized q4f16 "
+        "export via ONNX Runtime (much faster on CPU; needs `uv sync --extra onnx`).",
     )
     parser.add_argument(
-        "--mlx-weights-cache",
-        default=os.environ.get("ANON_PROXY_MLX_WEIGHTS_CACHE"),
-        help="Path to cached MLX-converted weights. Generated on first use if not found.",
+        "--onnx-provider",
+        default=os.environ.get("ANON_PROXY_ONNX_PROVIDER", DEFAULT_ONNX_PROVIDER),
+        help=f"ONNX Runtime execution provider (default: {DEFAULT_ONNX_PROVIDER}).",
     )
     parser.add_argument(
         "--no-system-inject",
@@ -1016,7 +1023,13 @@ def main() -> None:
         help="Add an extra upstream provider. Repeatable. "
         "Example: --extra-upstream myprovider=https://api.example.com;adapter=openai",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    import uvicorn
+
+    args = _build_parser().parse_args()
 
     if args.config:
         try:
@@ -1062,13 +1075,14 @@ def main() -> None:
         or args.chunk_size != DEFAULT_CHUNK_SIZE
         or args.batch_size != 8
         or args.backend != "auto"
+        or args.onnx_provider != DEFAULT_ONNX_PROVIDER
     ):
-        device = None if args.backend == "auto" else args.backend
         pf = PrivacyFilter(
             merge_gap_allowed=cfg.merge_gap or None,
             chunk_size=args.chunk_size,
             batch_size=args.batch_size,
-            device=device,
+            backend=args.backend,
+            onnx_provider=args.onnx_provider,
         )
 
     # Load persistent PII store if requested.

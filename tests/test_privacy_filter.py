@@ -438,6 +438,21 @@ class TestConstructor:
         PrivacyFilter(device="cuda:0")
         assert captured["device"] == "cuda:0"
 
+    def test_onnx_backend_is_lazy_and_selectable(self, monkeypatch):
+        called = {"onnx": False}
+
+        def _fake_load_onnx(*_args, **_kwargs):
+            called["onnx"] = True
+            raise AssertionError("onnx loader must not run for torch backends")
+
+        monkeypatch.setattr(privacy_filter, "_load_onnx_classifier", _fake_load_onnx)
+        monkeypatch.setattr(privacy_filter, "pipeline", lambda **_kwargs: object())
+
+        f = PrivacyFilter(backend="cpu", chunk_size=privacy_filter.DEFAULT_CHUNK_SIZE)
+
+        assert f is not None
+        assert called["onnx"] is False
+
 
 # ---------------------------------------------------------------------------
 # detect_batch — must be removed.
@@ -448,3 +463,174 @@ class TestDetectBatchRemoved:
     def test_detect_batch_attribute_absent(self, make_filter):
         f = make_filter()
         assert not hasattr(f, "detect_batch")
+
+
+# ---------------------------------------------------------------------------
+# Backend dispatch (_build_pipeline). No model download — torch paths stub
+# `pipeline`, the onnx path stubs `_load_onnx_classifier`.
+# ---------------------------------------------------------------------------
+
+
+class TestBackendDispatch:
+    def _build(self, **kw):
+        defaults = dict(
+            model_id="m",
+            aggregation_strategy="simple",
+            backend="auto",
+            device=None,
+            onnx_provider="CPUExecutionProvider",
+        )
+        defaults.update(kw)
+        return privacy_filter._build_pipeline(**defaults)
+
+    def test_unknown_backend_raises(self):
+        with pytest.raises(ValueError, match="unsupported backend"):
+            self._build(backend="mlx")
+
+    def test_onnx_with_device_raises(self):
+        with pytest.raises(ValueError, match="device is only valid"):
+            self._build(backend="onnx", device="cpu")
+
+    def test_cpu_and_cuda_backends_pin_device(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        assert self._build(backend="cpu") == "PIPE"
+        assert captured["device"] == "cpu"
+        self._build(backend="cuda")
+        assert captured["device"] == "cuda"
+
+    def test_auto_falls_back_to_cpu_without_cuda(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+        self._build(backend="auto")
+        # None == torch's default CPU device: byte-identical to the old 'auto'.
+        assert captured["device"] is None
+
+    def test_auto_uses_cuda_when_available(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+        self._build(backend="auto")
+        assert captured["device"] == "cuda"
+
+    def test_explicit_device_overrides_backend(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(
+            privacy_filter, "pipeline", lambda **kw: captured.update(kw) or "PIPE"
+        )
+        self._build(backend="auto", device="cuda:1")
+        assert captured["device"] == "cuda:1"
+
+    def test_onnx_dispatches_to_loader(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_loader(*, model_id, provider):
+            seen["model_id"] = model_id
+            seen["provider"] = provider
+            return "ONNX_PIPE"
+
+        monkeypatch.setattr(privacy_filter, "_load_onnx_classifier", fake_loader)
+        assert self._build(backend="onnx", model_id="openai/privacy-filter") == (
+            "ONNX_PIPE"
+        )
+        assert seen == {
+            "model_id": "openai/privacy-filter",
+            "provider": "CPUExecutionProvider",
+        }
+
+    def test_onnx_missing_runtime_gives_install_hint(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **kw):
+            if name == "onnxruntime":
+                raise ImportError(name)
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with pytest.raises(RuntimeError, match=r"uv sync --extra onnx"):
+            privacy_filter._load_onnx_classifier(
+                model_id="openai/privacy-filter", provider="CPUExecutionProvider"
+            )
+
+
+# ---------------------------------------------------------------------------
+# ONNX BIOES token aggregation — pure functions, tested without the model so
+# CI covers the onnx correctness path even though the live model is opt-in.
+# ---------------------------------------------------------------------------
+
+
+class TestOnnxTagSplit:
+    def test_bioes_prefixes_split(self):
+        assert privacy_filter._split_tag("B-private_person") == ("B", "private_person")
+        assert privacy_filter._split_tag("I-private_email") == ("I", "private_email")
+        assert privacy_filter._split_tag("E-private_phone") == ("E", "private_phone")
+        assert privacy_filter._split_tag("S-account_number") == ("S", "account_number")
+
+    def test_bare_label_treated_as_begin(self):
+        assert privacy_filter._split_tag("private_person") == ("B", "private_person")
+
+
+def _tok(prefix, entity, start, end, score=0.9):
+    return {
+        "prefix": prefix,
+        "entity": entity,
+        "start": start,
+        "end": end,
+        "score": score,
+    }
+
+
+class TestOnnxAggregate:
+    def test_single_begin_is_one_span(self):
+        text = "Alice"
+        spans = privacy_filter._aggregate_tokens([_tok("B", "person", 0, 5)], text)
+        assert spans == [
+            {
+                "entity_group": "person",
+                "start": 0,
+                "end": 5,
+                "score": 0.9,
+                "word": "Alice",
+            }
+        ]
+
+    def test_begin_inside_same_entity_merges_with_min_score(self):
+        text = "Alice Smith"
+        spans = privacy_filter._aggregate_tokens(
+            [_tok("B", "person", 0, 5, 0.9), _tok("I", "person", 6, 11, 0.7)], text
+        )
+        assert len(spans) == 1
+        assert (spans[0]["start"], spans[0]["end"]) == (0, 11)
+        assert spans[0]["score"] == 0.7
+        assert spans[0]["word"] == "Alice Smith"
+
+    def test_new_begin_starts_new_span(self):
+        text = "Alice Bob"
+        spans = privacy_filter._aggregate_tokens(
+            [_tok("B", "person", 0, 5), _tok("B", "person", 6, 9)], text
+        )
+        assert [s["word"] for s in spans] == ["Alice", "Bob"]
+
+    def test_entity_change_starts_new_span(self):
+        text = "Alice x@y"
+        spans = privacy_filter._aggregate_tokens(
+            [_tok("B", "person", 0, 5), _tok("I", "email", 6, 9)], text
+        )
+        assert [s["entity_group"] for s in spans] == ["person", "email"]
+
+    def test_singleton_closes_and_resets(self):
+        text = "A bob"
+        spans = privacy_filter._aggregate_tokens(
+            [_tok("S", "person", 0, 1), _tok("I", "person", 2, 5)], text
+        )
+        # The S closes immediately; the following I cannot glom onto it.
+        assert [s["word"] for s in spans] == ["A", "bob"]
