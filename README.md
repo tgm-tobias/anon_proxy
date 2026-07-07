@@ -210,7 +210,6 @@ Writes are atomic (written to a `.tmp` file, then renamed) and offloaded to a th
 
 Also settable via `ANON_PROXY_STORE` environment variable.
 
-<<<<<<< HEAD
 ### Multi-user deployments
 
 Single-user mode uses one shared placeholder store for the whole proxy process.
@@ -231,7 +230,9 @@ do not include either header fail closed with `401`.
 With `--store`, the path is a directory. Each client gets its own
 `<client_id>.json` file, where `client_id` is the first 16 hex characters of a
 SHA-256 hash of the credential. The credential itself is never written to disk.
-=======
+
+### Managing the placeholder store
+
 Inspect or clean a store with `anon-proxy-store` after stopping the proxy:
 
 ```bash
@@ -252,7 +253,49 @@ modifying the store. Counters are never decremented, so deleted placeholder
 indexes are not reused in old transcripts. `prune` requires at least one filter
 or an explicit `--all`; this prevents an accidental bare prune from selecting
 the entire store.
->>>>>>> 9464d5d (feat: rebuild store cleanup CLI)
+
+## Menu-bar indicator (macOS)
+
+A menu-bar dinosaur whose run speed tracks live `/_status` token throughput,
+with idle, masking-error alarm, down states, per-agent attribution, holiday
+skins, and a terminal fallback for non-macOS hosts.
+
+```bash
+uv sync --extra menubar
+
+# With the proxy already running:
+uv run anon-proxy-menubar
+uv run anon-proxy-menubar --watch
+uv run anon-proxy-menubar --url http://127.0.0.1:8080/_status
+```
+
+The dropdown includes:
+
+- `Theme`: `Auto`, `Classic`, `Halloween`, and `Winter`. `Auto` switches by date.
+- `Reset alarm`: re-arms the masking-error latch after you have inspected it.
+- `Start proxy`, `Stop proxy`, `Restart proxy`: supervises only a proxy process
+  launched by this menu-bar app.
+- `Start at login`: installs or removes the launchd agent
+  `com.anon-proxy.menubar`.
+
+Regenerate the committed dino frames after editing the pixel matrices:
+
+```bash
+uv run --extra gen python scripts/gen_dino_assets.py
+```
+
+Thin-shell macOS smoke test:
+
+```bash
+uv sync --extra menubar
+uv run python -m anon_proxy.server --port 8080
+uv run anon-proxy-menubar --url http://127.0.0.1:8080/_status
+```
+
+Verify by eye that the dinosaur appears in the menu bar, stands still while
+idle, switches to the running frames when `tokens_per_sec` rises, shows the last
+client in the dropdown, changes theme from the menu, and falls back to the down
+state when the proxy exits.
 
 ## Docker
 
