@@ -1,5 +1,7 @@
 import atexit
+import gc
 import sys
+import weakref
 
 from anon_proxy.menubar.supervisor import (
     ProxySupervisor,
@@ -37,18 +39,60 @@ def test_start_is_idempotent_while_running():
     sup.stop(grace=2.0)
 
 
+def _track_atexit(monkeypatch):
+    """Make atexit.register/unregister append/remove from a list we can assert on."""
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
+    monkeypatch.setattr(
+        atexit,
+        "unregister",
+        lambda fn: registered.remove(fn) if fn in registered else None,
+    )
+    return registered
+
+
 def test_atexit_handler_stops_running_child(monkeypatch):
-    handlers = []
-    monkeypatch.setattr(atexit, "register", lambda fn: handlers.append(fn))
+    registered = _track_atexit(monkeypatch)
     sup = ProxySupervisor(cmd=[sys.executable, "-c", "import time; time.sleep(30)"])
-    assert sup.stop in handlers
     sup.start()
+    assert sup.stop in registered  # registered once a child exists
     assert sup.is_running()
 
-    for fn in handlers:
+    for fn in list(registered):  # simulate interpreter exit on app Quit
         fn()
 
-    assert not sup.is_running()
+    assert not sup.is_running()  # child reaped, port released
+
+
+def test_atexit_registration_tracks_child_lifecycle(monkeypatch):
+    registered = _track_atexit(monkeypatch)
+    sup = ProxySupervisor(cmd=[sys.executable, "-c", "import time; time.sleep(30)"])
+    assert sup.stop not in registered  # construction registers nothing
+    sup.start()
+    assert sup.stop in registered  # a live child is registered for reaping
+    sup.stop(grace=2.0)
+    assert sup.stop not in registered  # reaped child unregisters
+
+
+def test_restart_reregisters_atexit_cleanup(monkeypatch):
+    registered = _track_atexit(monkeypatch)
+    sup = ProxySupervisor(cmd=[sys.executable, "-c", "import time; time.sleep(30)"])
+    sup.start()
+    sup.restart()
+    assert sup.stop in registered  # restarted child is still reaped at exit
+    sup.stop(grace=2.0)
+    assert sup.stop not in registered
+
+
+def test_stopped_supervisor_is_garbage_collectable():
+    # Uses the REAL atexit: after stop(), nothing pins the supervisor.
+    sup = ProxySupervisor(cmd=[sys.executable, "-c", "import time; time.sleep(30)"])
+    sup.start()
+    sup.stop(grace=2.0)
+    ref = weakref.ref(sup)
+    del sup
+    gc.collect()
+    assert ref() is None  # not pinned by atexit -> collected
 
 
 def test_plist_contains_label_and_args():

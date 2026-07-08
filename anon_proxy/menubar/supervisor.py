@@ -28,7 +28,6 @@ class ProxySupervisor:
     def __init__(self, cmd: list[str] | None = None) -> None:
         self._cmd = cmd or [sys.executable, "-m", "anon_proxy.server"]
         self._proc: subprocess.Popen | None = None
-        atexit.register(self.stop)
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -37,8 +36,13 @@ class ProxySupervisor:
         if self.is_running():
             return
         self._proc = subprocess.Popen(self._cmd + list(extra_args or []))
+        # Reap this child if the process exits before stop() is called (e.g. the
+        # menu-bar app is quit). Unregistered again in stop(), so the atexit list
+        # tracks the child's lifecycle, not the supervisor's object lifetime.
+        atexit.register(self.stop)
 
     def stop(self, grace: float = 5.0) -> None:
+        atexit.unregister(self.stop)
         if not self.is_running():
             self._proc = None
             return
