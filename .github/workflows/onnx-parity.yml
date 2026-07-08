@@ -1,0 +1,46 @@
+name: ONNX parity
+
+# The ONNX detection-parity gate is the ship criterion for the onnx backend
+# (onnx must mask every char torch masks — a miss is a PII leak). It downloads
+# gigabytes (incl. the ~0.77 GB q4f16 export), so it is kept OFF the per-PR
+# path and run nightly + on demand instead.
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: onnx-parity
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Cache Hugging Face model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-privacy-filter-onnx-v1
+          restore-keys: |
+            hf-privacy-filter-onnx-
+
+      - name: Install dependencies (onnx extra + torch reference)
+        run: uv sync --extra onnx --dev
+
+      - name: Run ONNX detection-parity gate
+        env:
+          ANON_PROXY_LIVE_TESTS: "1"
+        run: uv run --extra onnx pytest tests/test_backend_parity.py -v
