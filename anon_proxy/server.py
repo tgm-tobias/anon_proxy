@@ -895,6 +895,17 @@ def _effective_patterns(
     return dict(user_patterns)
 
 
+def default_store_path():
+    """Persistent PII store path for supervised one-click runs."""
+    from pathlib import Path
+
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    directory = base / "anon-proxy"
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    return directory / "store.json"
+
+
 def _build_parser():
     import argparse
 

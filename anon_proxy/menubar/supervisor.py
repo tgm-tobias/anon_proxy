@@ -25,8 +25,23 @@ _PLIST_TMPL = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 class ProxySupervisor:
-    def __init__(self, cmd: list[str] | None = None) -> None:
-        self._cmd = cmd or [sys.executable, "-m", "anon_proxy.server"]
+    def __init__(
+        self, cmd: list[str] | None = None, *, backend: str | None = None
+    ) -> None:
+        if cmd is None:
+            from anon_proxy.server import default_store_path
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "anon_proxy.server",
+                "--store",
+                str(default_store_path()),
+                "--metrics",
+            ]
+            if backend is not None:
+                cmd += ["--backend", backend]
+        self._cmd = cmd
         self._proc: subprocess.Popen | None = None
 
     def is_running(self) -> bool:

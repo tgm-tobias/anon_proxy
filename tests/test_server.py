@@ -48,6 +48,18 @@ class TestEffectivePatterns:
         assert _effective_patterns({"EMAIL": "custom"}, False) == {"EMAIL": "custom"}
 
 
+def test_default_store_path_under_private_state_dir(tmp_path, monkeypatch):
+    from anon_proxy import server
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    path = server.default_store_path()
+
+    assert path == tmp_path / "anon-proxy" / "store.json"
+    assert path.parent.is_dir()
+    assert (path.parent.stat().st_mode & 0o777) == 0o700
+
+
 # ---------------------------------------------------------------------------
 # atomic_write_json (the shared sync I/O helper)
 # ---------------------------------------------------------------------------

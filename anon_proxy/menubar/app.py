@@ -7,6 +7,7 @@ import datetime as dt
 import sys
 import time
 
+from anon_proxy import client_config
 from anon_proxy.menubar import config as cfg
 from anon_proxy.menubar import themes
 from anon_proxy.menubar.render import format_watch_line, render
@@ -60,7 +61,9 @@ def watch_loop(url: str, *, interval: float = 2.0) -> None:
         print("\nstopped.")
 
 
-def _run_macos_app(url: str, *, start_proxy: bool = False) -> None:
+def _run_macos_app(
+    url: str, *, start_proxy: bool = False, backend: str | None = None
+) -> None:
     import rumps
 
     class DinoApp(rumps.App):
@@ -69,7 +72,7 @@ def _run_macos_app(url: str, *, start_proxy: bool = False) -> None:
             self._cfg = cfg.load_config()
             self._url = url or self._cfg["url"]
             self._latch = AlarmLatch()
-            self._supervisor = ProxySupervisor()
+            self._supervisor = ProxySupervisor(backend=backend)
             self._last_status: dict | None = None
             self._frame_idx = 0
             self._last_frame_at = 0.0
@@ -112,6 +115,15 @@ def _run_macos_app(url: str, *, start_proxy: bool = False) -> None:
             self.menu.add(rumps.MenuItem("Stop proxy", callback=self._stop_proxy))
             self.menu.add(rumps.MenuItem("Restart proxy", callback=self._restart_proxy))
             self.menu.add(None)
+            self.menu.add(
+                rumps.MenuItem(
+                    "Copy Claude Code base URL", callback=self._copy_claude_url
+                )
+            )
+            self.menu.add(
+                rumps.MenuItem("Copy OpenAI base URL", callback=self._copy_openai_url)
+            )
+            self.menu.add(None)
             item = rumps.MenuItem(
                 "Start at login", callback=self._toggle_start_at_login
             )
@@ -151,6 +163,24 @@ def _run_macos_app(url: str, *, start_proxy: bool = False) -> None:
 
         def _restart_proxy(self, _sender) -> None:
             self._supervisor.restart()
+
+        def _copy_url(self, provider: str) -> None:
+            url = client_config.base_url_for(provider)
+            try:
+                from AppKit import NSPasteboard, NSStringPboardType
+
+                pb = NSPasteboard.generalPasteboard()
+                pb.declareTypes_owner_([NSStringPboardType], None)
+                pb.setString_forType_(url, NSStringPboardType)
+                rumps.notification("anon-proxy", "Copied", url)
+            except Exception:
+                print(url)
+
+        def _copy_claude_url(self, _sender) -> None:
+            self._copy_url("claude")
+
+        def _copy_openai_url(self, _sender) -> None:
+            self._copy_url("openai")
 
         def _tick(self, _timer) -> None:
             now = time.time()
@@ -197,6 +227,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--start-proxy", action="store_true", help="launch a supervised proxy on start"
     )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="inference backend for the supervised proxy (torch, onnx, auto)",
+    )
     args = parser.parse_args(argv)
 
     url = args.url or cfg.load_config()["url"]
@@ -205,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
             print("menu bar is macOS-only; showing --watch terminal view instead.")
         watch_loop(url)
         return
-    _run_macos_app(url, start_proxy=args.start_proxy)
+    _run_macos_app(url, start_proxy=args.start_proxy, backend=args.backend)
 
 
 if __name__ == "__main__":

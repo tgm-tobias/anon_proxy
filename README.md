@@ -84,6 +84,40 @@ claude[1]> Sure <PERSON_1>, here's the summary of the note from <EMAIL_1>: ...
 
 ---
 
+## Quickstart (one command)
+
+Once published to PyPI:
+
+```bash
+uv tool install anon-proxy
+anon-proxy up
+```
+
+`anon-proxy up` fetches the model with a progress bar, launches the menu-bar
+GUI with a stateful proxy, and prints the client configuration line:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080/anthropic
+claude
+```
+
+Prefer the smaller ONNX weights:
+
+```bash
+anon-proxy up --backend onnx-q4f16
+```
+
+Individual steps if you want them:
+
+```bash
+anon-proxy download-model --backend onnx-q4f16
+anon-proxy setup-client claude --write ~/.zshrc
+anon-proxy install-app
+anon-proxy-menubar
+```
+
+---
+
 ## Prerequisites
 
 - Python ≥ 3.10 (use [uv](https://docs.astral.sh/uv/))
