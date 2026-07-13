@@ -1,0 +1,25 @@
+services:
+  anon-proxy:
+    init: true
+    build: .
+    ports:
+      - "5580:8080"
+    volumes:
+      # Read-only: drop config.json here; entrypoint auto-discovers it.
+      - ./config:/config:ro
+      # Read-write: capture.jsonl, pii_store.json, other runtime output.
+      - anon-proxy-data:/data
+      # Read-write: HF_HOME cache for the privacy-filter model weights.
+      # Persist this to avoid re-downloading (~500MB) on every restart.
+      - anon-proxy-models:/models
+    environment:
+      ANON_PROXY_BACKEND: cpu
+      # ANON_PROXY_DEBUG: "true"
+      # ANON_PROXY_METRICS: "true"
+      # ANON_PROXY_CAPTURE: /data/capture.jsonl   # UNMASKED PII, opt-in only
+      # ANON_PROXY_STORE: /data/pii_store.json
+    restart: unless-stopped
+
+volumes:
+  anon-proxy-data:
+  anon-proxy-models:
