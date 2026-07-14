@@ -77,6 +77,18 @@ anon-proxy-store = "anon_proxy.store_cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# On Linux, PyPI's torch wheel bundles CUDA (~3 GB). This project's inference is
+# CPU/ONNX by default, so resolve torch from PyTorch's CPU index there instead.
+# macOS/Windows keep the PyPI wheel. For a CUDA GPU on Linux, reinstall torch
+# from the matching PyTorch index after `uv sync`.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
 [tool.hatch.build.targets.wheel]
 artifacts = [
     "anon_proxy/assets/dino/**/*.png",

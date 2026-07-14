@@ -1,6 +1,6 @@
 # anon-proxy: PII masking proxy for LLM APIs (CPU-only image for k8s)
 #
-# Build:
+# Build (BuildKit required — default on modern Docker):
 #   docker build -t anon-proxy:latest .
 #
 # Run (k8s pod sketch):
@@ -28,46 +28,63 @@
 # subsequent start (and every other replica that mounts the same PVC) reuses
 # the cached files. Expect a one-time stall on the first request after a
 # fresh PVC. To pre-populate, run once locally with HF_HOME pointing at the
-# volume and rsync the result up.
+# volume and rsync the result up. The default onnx backend fetches the q4f16
+# graph plus its weights sidecar (~0.77 GB); size the models PVC accordingly.
 
-FROM python:3.10-slim
+# ---------------------------------------------------------------------------
+# Builder: resolve and install into /app/.venv from uv.lock.
+# ---------------------------------------------------------------------------
+# torch resolves to the CPU-only wheel here — pyproject pins the pytorch-cpu
+# index for sys_platform == 'linux', which keeps the ~3 GB of CUDA libraries
+# out of the image. See the [tool.uv.sources] comment in pyproject.toml.
+#
+# --extra onnx adds onnxruntime, for ANON_PROXY_BACKEND=onnx (the image
+# default): the pre-quantized q4f16 graph is ~9x faster than torch on CPU.
+FROM ghcr.io/astral-sh/uv:0.8-python3.10-bookworm-slim AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /src
+
+# 1. Dependencies only, from the lock. Split from the project install so this
+#    layer (the slow one — torch and friends) survives source-only edits.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-dev --extra onnx --no-install-project
+
+# 2. The project itself. --no-editable copies it into site-packages so the
+#    runtime stage needs nothing but the venv.
+COPY pyproject.toml uv.lock README.md ./
+COPY anon_proxy ./anon_proxy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --extra onnx --no-editable
+
+# ---------------------------------------------------------------------------
+# Runtime: the venv, and nothing else. No uv, no build tooling, no sources.
+# ---------------------------------------------------------------------------
+FROM python:3.10-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HF_HOME=/models \
     ANON_PROXY_HOST=0.0.0.0 \
     ANON_PROXY_PORT=8080 \
-    ANON_PROXY_BACKEND=cpu
+    ANON_PROXY_BACKEND=onnx \
+    PATH="/app/.venv/bin:$PATH"
+
+COPY --from=builder /app/.venv /app/.venv
 
 WORKDIR /app
 
-# 1. CPU-only torch wheel from PyTorch's index. Saves ~3 GB vs PyPI's
-#    CUDA-bundled Linux wheel. Pinning by major version satisfies the
-#    `torch>=2.11.0` constraint in pyproject.toml.
-#    --index-url makes the CPU index primary (so torch's `+cpu` build wins over
-#    PyPI's CUDA wheel); --extra-index-url adds PyPI as fallback for transitive
-#    deps like typing-extensions that aren't mirrored on the PyTorch index.
-RUN pip install \
-        --index-url https://download.pytorch.org/whl/cpu \
-        --extra-index-url https://pypi.org/simple \
-        "torch>=2.11.0"
-
-# 2. Project metadata + source. Copy in two steps so the Docker layer cache
-#    survives source-only edits when pyproject is unchanged.
-COPY pyproject.toml README.md ./
-COPY anon_proxy ./anon_proxy
-
-# 3. Install the project itself + remaining deps. torch is already installed
-#    from the CPU index above, so pip skips it here.
-RUN pip install .
-
-# 4. Mount points for runtime configuration, persistent capture/metrics output,
-#    and the HF model cache.
-#    /config: read-only ConfigMap with config.json
-#    /data:   read-write PVC for capture.jsonl
-#    /models: read-write PVC for HF_HOME — populated on first run, reused thereafter
+# Mount points for runtime configuration, persistent capture/metrics output,
+# and the HF model cache.
+#   /config: read-only ConfigMap with config.json
+#   /data:   read-write PVC for capture.jsonl
+#   /models: read-write PVC for HF_HOME — populated on first run, reused thereafter
 VOLUME ["/config", "/data", "/models"]
 
 EXPOSE 8080

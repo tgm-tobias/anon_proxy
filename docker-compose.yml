@@ -13,13 +13,21 @@ services:
       # Persist this to avoid re-downloading (~500MB) on every restart.
       - anon-proxy-models:/models
     environment:
-      ANON_PROXY_BACKEND: cpu
+      ANON_PROXY_BACKEND: onnx
       # ANON_PROXY_DEBUG: "true"
       # ANON_PROXY_METRICS: "true"
       # ANON_PROXY_CAPTURE: /data/capture.jsonl   # UNMASKED PII, opt-in only
       # ANON_PROXY_STORE: /data/pii_store.json
     restart: unless-stopped
+    networks:
+      - app
+      - proxy
 
 volumes:
   anon-proxy-data:
   anon-proxy-models:
+
+networks:
+  app:
+  proxy:
+    external: true

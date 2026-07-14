@@ -130,6 +130,14 @@ uv sync         # install dependencies
 uv sync --extra onnx  # optional: fast ONNX Runtime backend (see --backend onnx)
 ```
 
+> **Linux + CUDA:** `uv sync` installs the CPU-only torch wheel on Linux, since PyPI's
+> CUDA build adds ~3 GB that the default CPU/ONNX backends never use. To run
+> `--backend cuda`, reinstall torch from the matching PyTorch index afterwards:
+>
+> ```bash
+> uv pip install --index-url https://download.pytorch.org/whl/cu129 --force-reinstall torch
+> ```
+
 **Dependencies:** `torch`, `transformers` (local PII model), `starlette` + `uvicorn` (proxy server), `httpx` (upstream client), `anthropic` + `prompt-toolkit` (demo scripts).
 
 ---
